@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>船舶证书 PDF 标注与信息汇总</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="hero">
+      <h1>船舶证书 PDF 标注工具</h1>
+      <p class="sub">纯前端 · 浏览器本地处理 · 文件不上传服务器</p>
+      <details class="help">
+        <summary>使用说明</summary>
+        <ol>
+          <li>把一份或多份带<strong>文本层</strong>的船舶证书 PDF 拖入下方区域（或点击选择）。</li>
+          <li>选择「年检日期」框的颜色（默认蓝色）。</li>
+          <li>点击「开始处理」。工具会：
+            <ul>
+              <li>在每本证书的<strong>有效日期</strong>处画<em>红框</em>；</li>
+              <li>在<strong>年度/中间检验</strong>日期处画<em>蓝/绿/橙框</em>；</li>
+              <li>把全部证书信息汇总进 Excel（沿用内置模板样式）。</li>
+            </ul>
+          </li>
+          <li>处理完成后，点「下载全部（ZIP）」即可拿到标注后的 PDF 与汇总表；也可逐个下载。</li>
+        </ol>
+        <p class="note">支持的船级社/登记处：DNV、CCS、LR、ABS、BV、NK、RS、RINA、IRS、KR、PRS、CRS 等；覆盖 18 类常见证书。识别依据内置知识库，可在源码 src/kb.js 中扩展。</p>
+      </details>
+    </header>
+
+    <main>
+      <section class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple hidden />
+        <div class="dz-inner">
+          <div class="dz-icon">⬇</div>
+          <p>拖拽 PDF 到这里，或 <button type="button" class="link" id="pickBtn">点击选择</button></p>
+          <p class="hint">可批量选择多个 PDF</p>
+        </div>
+      </section>
+
+      <section class="files" id="fileSection" hidden>
+        <h2>待处理文件 <span class="count" id="fileCount">0</span></h2>
+        <ul id="fileList" class="file-list"></ul>
+      </section>
+
+      <section class="options">
+        <label>年检日期框颜色：
+          <select id="annualColor">
+            <option value="blue">蓝色（默认）</option>
+            <option value="green">绿色</option>
+            <option value="orange">橙色</option>
+          </select>
+        </label>
+        <button type="button" id="runBtn" class="primary" disabled>开始处理</button>
+        <button type="button" id="clearBtn" class="ghost" disabled>清空</button>
+      </section>
+
+      <section class="log-wrap" id="logWrap" hidden>
+        <h2>处理进度</h2>
+        <pre id="log" class="log"></pre>
+      </section>
+
+      <section class="results" id="results" hidden>
+        <h2>汇总结果</h2>
+        <div class="actions">
+          <button type="button" id="downloadZip" class="primary">下载全部（ZIP）</button>
+        </div>
+        <div class="table-scroll">
+          <table id="resultTable">
+            <thead>
+              <tr><th>序号</th><th>证书类型</th><th>证书编号</th><th>签发日期</th><th>有效日期</th><th>年检日期</th><th>备注</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <ul id="downloadList" class="download-list"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>本工具所有计算均在你的浏览器本地完成，PDF 与证书信息不会离开本机。</p>
+    </footer>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "ship-cert-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "船舶证书 PDF 在线标注与信息汇总工具（纯前端 / Cloudflare Pages）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.7.76"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

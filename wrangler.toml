@@ -1,0 +1,3 @@
+name = "ship-cert-web"
+pages_build_output_dir = "dist"
+# 纯静态站点, 无 Functions。部署: wrangler pages deploy dist
