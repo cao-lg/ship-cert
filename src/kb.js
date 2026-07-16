@@ -22,7 +22,7 @@ export const KB = {
   phrases: {
     expiry: [
       "valid until", "valid till", "expires on", "accepted as valid until",
-      "本证书有效期至", "有效期至", "失效日期", "到期", "有效期限", "过期日期",
+      "本证书有效期至", "有效期至", "有效日期", "失效日期", "到期", "有效期限", "过期日期",
     ],
     annual_survey: [
       "annual survey", "intermediate survey", "annual/intermediate survey",

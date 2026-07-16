@@ -119,15 +119,40 @@ export function detectType(fullRaw) {
   return "";
 }
 
-// 在 text 中, 对每个短语(按优先级)取其后最近日期
+// 在 text 中找出所有候选日期(位置 + ISO)。
+// 关键: DATE_RES 是带 ^...$ 锚点的"整 token 校验"式正则(供 matchDateToken 用),
+// 不能用于在长文本里挖日期子串。这里改用【未锚定】的 DATEPAT 全局正则逐段扫描,
+// 用 lastIndex 手动推进(标准 exec 循环), 既不会无限循环, 也不会因拼接 phrase+DATEPAT 巨型正则而原生崩溃。
+const DATE_SCAN = new RegExp(DATEPAT, "gi");
+export function extractAllDates(text) {
+  const found = [];
+  DATE_SCAN.lastIndex = 0;
+  let m;
+  while ((m = DATE_SCAN.exec(text)) !== null) {
+    const iso = toIso(m[0]);
+    if (iso) found.push({ index: m.index, iso });
+    if (m.index === DATE_SCAN.lastIndex) DATE_SCAN.lastIndex++; // 防零宽匹配死循环
+  }
+  found.sort((a, b) => a.index - b.index);
+  return found;
+}
+
+// 在 text 中, 对每个短语(按优先级)取其后最近的日期。
+// 改为"先定位短语、再在其后窗口内取最近日期", 不再拼接 phrase+DATEPAT 巨型正则, 规避原生崩溃。
 export function firstDateAfter(text, phrases) {
+  const dates = extractAllDates(text);
+  if (!dates.length) return "";
+  const low = text.toLowerCase();
   for (const ph of phrases) {
-    const re = new RegExp(escapeRegExp(ph) + `\\s*[:：]?\\s*(${DATEPAT})`, "i");
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      const iso = toIso(m[1]);
-      if (iso) return iso;
-      if (m.index === re.lastIndex) re.lastIndex++;
+    let idx = low.indexOf(ph.toLowerCase());
+    while (idx >= 0) {
+      let best = null, bestDist = Infinity;
+      for (const d of dates) {
+        const dist = d.index - idx;
+        if (dist >= 0 && dist < bestDist) { bestDist = dist; best = d.iso; }
+      }
+      if (best) return best;
+      idx = low.indexOf(ph.toLowerCase(), idx + 1);
     }
   }
   return "";
