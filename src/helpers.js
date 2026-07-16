@@ -6,21 +6,41 @@ export const MONTHS = {
   January: 1, February: 2, March: 3, April: 4, May: 5, June: 6,
   July: 7, August: 8, September: 9, October: 10, November: 11, December: 12,
 };
-const MONTH_ALT = Object.keys(MONTHS).join("|");
+const MONTH_ABBR = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
+const MONTH_LOOKUP = {};
+for (const [name, num] of Object.entries({ ...MONTHS, ...MONTH_ABBR })) {
+  MONTH_LOOKUP[name.toLowerCase()] = num;
+}
+// 大小写无关、全称/缩写都能查到月份数字
+export function monthNum(s) {
+  return MONTH_LOOKUP[String(s).toLowerCase()] || null;
+}
+const MONTH_NAME_ALT = Object.keys(MONTHS).join("|");
+const MONTH_ABBR_ALT = Object.keys(MONTH_ABBR).join("|");
+const MONTH_ALT = `${MONTH_NAME_ALT}|${MONTH_ABBR_ALT}`;
 const MONTH_RE = new RegExp(`^(${MONTH_ALT})$`, "i");
 
 // 统一日期模式: ISO / DD Month YYYY / Month DD, YYYY / 中文 YYYY年M月D日
+// 另兼容 pdf.js 把"日月年"提取成无空格粘连 token 的情况(如 16March2031 / September18,2026)
 export const DATEPAT =
   `(?:\\d{4}-\\d{2}-\\d{2}` +
   `|\\d{1,2}\\s+(?:${MONTH_ALT})\\s+\\d{4}` +
   `|${MONTH_ALT}\\s+\\d{1,2},?\\s+\\d{4}` +
-  `|\\d{4}年\\d{1,2}月\\d{1,2}日)`;
+  `|\\d{4}年\\d{1,2}月\\d{1,2}日` +
+  `|\\d{1,2}(?:${MONTH_ALT})\\d{4}` +
+  `|(?:${MONTH_ALT})\\d{1,2},?\\d{4}` +
+  `|\\d{1,2}[/.]\\d{1,2}[/.]\\d{4}` +
+  `|\\d{4}[/.]\\d{1,2}[/.]\\d{1,2})`;
 
 const DATE_RES = [
   /^\d{4}-\d{2}-\d{2}$/,
   new RegExp(`^\\d{1,2}\\s+${MONTH_ALT}\\s+\\d{4}$`, "i"),
   new RegExp(`^${MONTH_ALT}\\s+\\d{1,2},?\\s+\\d{4}$`, "i"),
   /^\d{4}年\d{1,2}月\d{1,2}日$/,
+  new RegExp(`^\\d{1,2}${MONTH_ALT}\\d{4}$`, "i"),
+  new RegExp(`^${MONTH_ALT}\\d{1,2},?\\d{4}$`, "i"),
+  new RegExp(`^\\d{1,2}[/.]\\d{1,2}[/.]\\d{4}$`),       // DD/MM/YYYY (欧式船证惯例)
+  new RegExp(`^\\d{4}[/.]\\d{1,2}[/.]\\d{1,2}$`),
 ];
 
 export function normToken(tok) {
@@ -33,10 +53,21 @@ export function toIso(text) {
   let m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = text.match(new RegExp(`^(\\d{1,2})\\s+(${MONTH_ALT})\\s+(\\d{4})$`, "i"));
-  if (m) return `${m[3]}-${String(MONTHS[m[2].title()]).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
+  if (m) return `${m[3]}-${String(monthNum(m[2])).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
   m = text.match(new RegExp(`^(${MONTH_ALT})\\s+(\\d{1,2}),?\\s+(\\d{4})$`, "i"));
-  if (m) return `${m[3]}-${String(MONTHS[m[1].title()]).padStart(2, "0")}-${String(parseInt(m[2], 10)).padStart(2, "0")}`;
+  if (m) return `${m[3]}-${String(monthNum(m[1])).padStart(2, "0")}-${String(parseInt(m[2], 10)).padStart(2, "0")}`;
   m = text.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日$/);
+  if (m) return `${m[1]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[3], 10)).padStart(2, "0")}`;
+  // 粘连 token: 16March2031 / 18Mar2027
+  m = text.match(new RegExp(`^(\\d{1,2})(${MONTH_ALT})(\\d{4})$`, "i"));
+  if (m) return `${m[3]}-${String(monthNum(m[2])).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
+  // 粘连 token: September18,2026 / March182026
+  m = text.match(new RegExp(`^(${MONTH_ALT})(\\d{1,2}),?(\\d{4})$`, "i"));
+  if (m) return `${m[3]}-${String(monthNum(m[1])).padStart(2, "0")}-${String(parseInt(m[2], 10)).padStart(2, "0")}`;
+  // 斜杠/点日期: 18/03/2027 或 18.03.2027 (欧式 DD/MM/YYYY); 及 2027/03/18
+  m = text.match(/^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$/);
+  if (m) return `${m[3]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
+  m = text.match(/^(\d{4})[/.](\d{1,2})[/.](\d{1,2})$/);
   if (m) return `${m[1]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[3], 10)).padStart(2, "0")}`;
   return null;
 }

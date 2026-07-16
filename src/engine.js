@@ -16,7 +16,7 @@ export function configurePdfjs(lib) { PDFJS = lib; }
 const MONTH_ALT = Object.keys(MONTHS).join("|");
 
 // ---------------------------------------------------------------- 页面解析
-function buildLines(items) {
+export function buildLines(items) {
   const sorted = [...items].sort((a, b) => a.y - b.y || a.x0 - b.x0);
   const lines = [];
   let cur = null, curY = null;
@@ -56,7 +56,7 @@ function detectTopHeading(lines, vpHeight) {
 }
 
 // 行内日期分组(支持 ISO / DD Mon YYYY / Mon DD YYYY / 中文)
-function findDateGroups(items) {
+export function findDateGroups(items) {
   const groups = [];
   const push = (arr) => {
     const combo = arr.map((i) => normToken(i.str)).join(" ");
@@ -76,6 +76,8 @@ function findDateGroups(items) {
     const nt = normToken(it.str);
     if (/^\d{4}-\d{2}-\d{2}$/.test(nt)) { push([it]); i++; continue; }
     if (/^\d{4}年\d{1,2}月\d{1,2}日$/.test(nt)) { push([it]); i++; continue; }
+    // 粘连 token(如 16March2031 / September18,2026): 单个 token 即完整日期
+    if (toIso(nt)) { push([it]); i++; continue; }
     const next = items[i + 1], nnext = items[i + 2];
     if (/^\d{1,2}$/.test(nt) && next && isMonth(normToken(next.str)) && nnext && /^\d{4}$/.test(normToken(nnext.str))) {
       push([it, next, nnext]); i += 3; continue;
@@ -106,16 +108,73 @@ function drawGroup(libPage, g, SCALE, pageHeight, stroke, fill) {
   });
 }
 
-function pickDateGroup(line, SCALE, pageHeight, libPage, stroke, fill, seen) {
-  const dgs = findDateGroups(line.items);
-  if (!dgs.length) return false;
-  const startX = line.x0 - 8;
-  const chosen = dgs.find((g) => g.x0Dev >= startX) || dgs[0];
-  const key = `${Math.round(chosen.x0Dev)}-${Math.round(chosen.yBotDev)}-${Math.round(chosen.x1Dev)}-${Math.round(chosen.yTopDev)}`;
-  if (seen.has(key)) return false;
-  seen.add(key);
-  drawGroup(libPage, chosen, SCALE, pageHeight, stroke, fill);
-  return true;
+// 短语与日期常不在同一行(尤其 CCS 等版式), 改为"就近关联":
+// 每个过期/年检短语, 在同页限定行窗口内找最近的日期组(优先同行或之后), 再画框。
+export function computeBoxes(pages, annualColor) {
+  const color = ANNUAL_COLORS[annualColor] || ANNUAL_COLORS.blue;
+  // 预提取每页每行的日期组
+  for (const p of pages) {
+    if (!p.allDates) {
+      p.allDates = [];
+      p.lines.forEach((line, li) => {
+        const dgs = findDateGroups(line.items).map((g) => ({
+          ...g,
+          li,
+          lineY: line.items.reduce((s, i) => s + i.y, 0) / Math.max(1, line.items.length),
+        }));
+        p.allDates.push(...dgs);
+      });
+    }
+  }
+  let red = 0, blue = 0;
+  const used = new Set();
+  const keyOf = (g) =>
+    `${Math.round(g.x0Dev)}-${Math.round(g.yBotDev)}-${Math.round(g.x1Dev)}-${Math.round(g.yTopDev)}`;
+  const lineY = (line) =>
+    line.items.reduce((s, i) => s + i.y, 0) / Math.max(1, line.items.length);
+  const boxes = [];
+  for (const p of pages) {
+    p.lines.forEach((line, li) => {
+      const lower = line.text.toLowerCase();
+      const isExpiry = EXPIRY_PHRASES.some((ph) => lower.includes(ph.toLowerCase()));
+      if (isExpiry) {
+        const g = nearestDate(p, li, lineY(line), used, keyOf);
+        if (g) {
+          boxes.push({ libPage: p.libPage, SCALE: p.SCALE, pageHeight: p.pageHeight, stroke: RED, fill: RED_FILL, group: g });
+          red++; used.add(keyOf(g));
+        }
+        return;
+      }
+      const hasKind = lower.includes("annual") || lower.includes("intermediate") ||
+        lower.includes("年度") || lower.includes("期间") || lower.includes("中间");
+      const hasSurvey = lower.includes("survey") || lower.includes("检验");
+      if (hasKind && hasSurvey) {
+        const g = nearestDate(p, li, lineY(line), used, keyOf);
+        if (g) {
+          boxes.push({ libPage: p.libPage, SCALE: p.SCALE, pageHeight: p.pageHeight, stroke: color.stroke, fill: color.fill, group: g });
+          blue++; used.add(keyOf(g));
+        }
+      }
+    });
+  }
+  return { boxes, red, blue };
+}
+
+function nearestDate(page, li, yPhrase, used, keyOf) {
+  const WIN = 12; // 行窗口: 允许短语与日期相隔至多 12 行
+  let best = null, bestScore = Infinity;
+  for (const g of page.allDates) {
+    if (used.has(keyOf(g))) continue;
+    if (Math.abs(g.li - li) > WIN) continue;
+    // 评分: 同一行 > 之后行 > 之前行(尽量贴合"标签所在行或其紧邻下方"的日期)
+    const dy = Math.abs(g.lineY - yPhrase);
+    let score;
+    if (g.li === li) score = dy;
+    else if (g.li > li) score = 30 + dy;
+    else score = 80 + dy;
+    if (score < bestScore) { bestScore = score; best = g; }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------- 分组
@@ -218,7 +277,6 @@ function buildRecord(group, pages, fileName) {
 // ---------------------------------------------------------------- 主流程
 export async function processPdf(bytes, opts = {}) {
   const annualColor = opts.annualColor || "blue";
-  const color = ANNUAL_COLORS[annualColor] || ANNUAL_COLORS.blue;
 
   const pdfLibDoc = await PDFDocument.load(bytes);
   const pdfjsDoc = await PDFJS.getDocument({
@@ -249,22 +307,10 @@ export async function processPdf(bytes, opts = {}) {
   }
   await pdfjsDoc.destroy();
 
-  let red = 0, blue = 0;
-  const seenRed = new Set(), seenBlue = new Set();
-  for (const p of pages) {
-    for (const line of p.lines) {
-      const lower = line.text.toLowerCase();
-      const isExpiry = EXPIRY_PHRASES.some((ph) => lower.includes(ph.toLowerCase()));
-      if (isExpiry) {
-        if (pickDateGroup(line, p.SCALE, p.pageHeight, p.libPage, RED, RED_FILL, seenRed)) red++;
-        continue;
-      }
-      const hasKind = lower.includes("annual") || lower.includes("intermediate") || lower.includes("年度") || lower.includes("期间") || lower.includes("中间");
-      const hasSurvey = lower.includes("survey") || lower.includes("检验");
-      if (hasKind && hasSurvey) {
-        if (pickDateGroup(line, p.SCALE, p.pageHeight, p.libPage, color.stroke, color.fill, seenBlue)) blue++;
-      }
-    }
+  // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙
+  const { boxes, red, blue } = computeBoxes(pages, annualColor);
+  for (const b of boxes) {
+    drawGroup(b.libPage, b.group, b.SCALE, b.pageHeight, b.stroke, b.fill);
   }
 
   const groups = groupCertificates(pages);
