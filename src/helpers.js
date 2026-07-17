@@ -141,7 +141,14 @@ const SOCIETY_MAP = KB.societies.flatMap((s) => s.keywords.map((kw) => [kw, s.co
 export function detectSociety(text) {
   const n = normSp(text);
   for (const [kw, code] of SOCIETY_MAP) {
-    if (n.includes(normSp(kw))) return code;
+    const ns = normSp(kw);
+    if (ns.length <= 4) {
+      // 短代码(2~4字母如 LR/RS/BV/ABS/NK/KR): 用词边界匹配, 避免 "rs" 误命中 "years"、"nk" 误命中 "thanks"
+      const re = new RegExp(`(^|[^a-z])${escapeRegExp(ns)}([^a-z]|$)`);
+      if (re.test(n)) return code;
+    } else {
+      if (n.includes(ns)) return code;
+    }
   }
   return "";
 }

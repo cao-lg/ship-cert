@@ -422,11 +422,36 @@ function buildRecord(group, pages, fileName) {
   if (ctype.includes("吨位") && !uniqAnnual.length) parts.push("国际吨位证书（1969），长期有效，无年度检验");
   if (fileName) parts.push(`来源:${fileName}`);
 
-  // 判断是否为幽灵记录: 无真实证书类型编码(无 "XXXX-" 前缀) 且 无签发/有效/年检日期。
-  // 注意: 仅有编号(cno)而无类型/日期的组通常是分组过切产生的垃圾组, 不应写入 Excel。
-  const _ghost = !ctype.includes("-") && !issue && !expiry && !annual;
+  // 判断是否为幽灵记录: 无任何有用信息(无编号且无任何日期) — 仅留类型不足以识别具体证书, 写入 Excel 也是垃圾行。
+  const _ghost = !cno && !issue && !expiry && !annual;
 
   return { type: ctype, no: cno, issue, expiry, annual, remark: parts.join("；"), _ghost };
+}
+
+// 同一 PDF 内去重: 标题检测在多页都命中时(扫描件/页脚重复)会把一本证书切成多个 group,
+// 产生"同 (类型, 编号) 多行 + 一行有日期其余全空"的垃圾。合并策略:
+//  - key = (类型, 编号); 多个记录同 key 视为同一证书;
+//  - 保留"字段最完整"的那条(按 expiry(4) + issue(2) + annual(2) + no(1) 加权打分);
+//  - 丢弃的记录的备注合并进保留记录的备注(用 ｜ 分隔, 保留来源可追溯)。
+function dedupRecords(records) {
+  const groups = new Map();
+  for (const r of records) {
+    const key = `${r.type || ""}|${r.no || ""}`;
+    const ex = groups.get(key);
+    if (!ex) { groups.set(key, r); continue; }
+    const score = (x) => (x.expiry ? 4 : 0) + (x.issue ? 2 : 0) + (x.annual ? 2 : 0) + (x.no ? 1 : 0);
+    if (score(r) > score(ex)) {
+      if (ex.remark && ex.remark !== r.remark) {
+        r.remark = r.remark ? `${r.remark} ｜ ${ex.remark}` : ex.remark;
+      }
+      groups.set(key, r);
+    } else {
+      if (r.remark && r.remark !== ex.remark) {
+        ex.remark = ex.remark ? `${ex.remark} ｜ ${r.remark}` : r.remark;
+      }
+    }
+  }
+  return [...groups.values()];
 }
 
 // ---------------------------------------------------------------- 主流程
@@ -490,7 +515,10 @@ export async function processPdf(bytes, opts = {}) {
 
   const groups = groupCertificates(pages);
   let records = groups.map((g) => buildRecord(g, pages, opts.fileName));
-  // 过滤幽灵记录:无可识别类型(无编码前缀"XXXX-")、无编号、无任何日期的空行不写入 Excel
+  // 同 PDF 内去重: 标题检测在多页都命中时(扫描件页脚重复/版式)会把一本证书切成多个 group,
+  // 合并"同 (类型, 编号) 的多条记录", 保留字段最完整的那条, 避免 Excel 出现"空行/重复行"。
+  records = dedupRecords(records);
+  // 过滤幽灵记录: 无编号且无任何日期的空行不写入 Excel
   const validRecords = records.filter((r) => !r._ghost);
   if (validRecords.length !== records.length) {
     // 幽灵组的页内容合并到相邻组(防止丢页), 但不在 Excel 中产生空行
