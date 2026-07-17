@@ -1,7 +1,7 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import JSZip from "jszip";
-import { processPdf, configurePdfjs } from "./engine.js";
+import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -18,6 +18,7 @@ const fileSection = $("fileSection");
 const fileListEl = $("fileList");
 const fileCountEl = $("fileCount");
 const annualColorSel = $("annualColor");
+const mergePdfChk = $("mergePdf");
 const runBtn = $("runBtn");
 const clearBtn = $("clearBtn");
 const logWrap = $("logWrap");
@@ -112,7 +113,7 @@ async function run() {
     log(`[处理] ${fname}`);
     try {
       const bytes = new Uint8Array(await x.file.arrayBuffer());
-      const { bytes: outBytes, records, red, blue } = await processPdf(bytes, {
+      const { bytes: outBytes, records, red, blue, textStats } = await processPdf(bytes, {
         annualColor,
         fileName: fname,
         standardFontDataUrl: STD_FONTS,
@@ -122,7 +123,13 @@ async function run() {
       const base = fname.replace(/\.pdf$/i, "");
       outPdfs.push({ name: `${base}-标注.pdf`, bytes: outBytes });
       allRecords.push(...records);
-      log(`  标注完成: 红框=${red}  年检框=${blue}  证书=${records.length}`);
+
+      // 诊断日志
+      let diag = "";
+      if (textStats.isLikelyScanned) diag = ` ⚠️ 可能是扫描版PDF(文字极少,${textStats.totalItems}个文本元素)`;
+      else if (red === 0 && blue === 0 && textStats.totalLines > 3) diag = ` ⚠️ 有文字(${textStats.totalLines}行)但未匹配到日期短语,可能是非常规格式`;
+
+      log(`  标注完成: 红框=${red}  年检框=${blue}  证书=${records.length}  页数=${textStats.numPages}${diag}`);
       records.forEach((r, i) =>
         log(`    ${i + 1}. ${r.type} | ${r.no || "-"} | 签发 ${r.issue || "-"} | 有效 ${r.expiry || "-"} | 年检 ${r.annual || "-"}`)
       );
@@ -141,14 +148,29 @@ async function run() {
   }
 
   log(`\n完成。红框累计 ${grandRed}，年检框累计 ${grandBlue}。`);
-  lastOutputs = { pdfs: outPdfs, excel: excelBytes, records: allRecords };
-  renderResults(outPdfs, excelBytes, allRecords);
+
+  // 合并 PDF（如果勾选了且有多份）
+  let mergedBytes = null;
+  if (mergePdfChk.checked && outPdfs.length > 1) {
+    try {
+      log("\n[合并] 正在合并所有标注PDF为一份...");
+      mergedBytes = await mergePdfs(outPdfs.map((p) => p.bytes), {
+        title: `船舶证书标注汇总_${new Date().toISOString().slice(0, 10)}`,
+      });
+      log(`  合并完成: 共 ${outPdfs.length} 份 → 1份合并PDF`);
+    } catch (e) {
+      log(`  ✗ 合并失败: ${e.message}`);
+    }
+  }
+
+  lastOutputs = { pdfs: outPdfs, excel: excelBytes, records: allRecords, mergedPdf: mergedBytes };
+  renderResults(outPdfs, excelBytes, allRecords, mergedBytes);
   runBtn.disabled = false;
   clearBtn.disabled = false;
   fileInput.disabled = false;
 }
 
-function renderResults(outPdfs, excelBytes, records) {
+function renderResults(outPdfs, excelBytes, records, mergedBytes) {
   resultsEl.hidden = false;
   resultBody.innerHTML = "";
   records.forEach((r, i) => {
@@ -158,6 +180,18 @@ function renderResults(outPdfs, excelBytes, records) {
   });
 
   downloadListEl.innerHTML = "";
+  // 合并PDF（排在最前）
+  if (mergedBytes) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([mergedBytes], { type: "application/pdf" }));
+    a.download = `船舶证书标注合并_${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.textContent = "⬇ 船舶证书标注合并.pdf（全部合为一份）";
+    a.style.fontWeight = "bold";
+    li.appendChild(a);
+    downloadListEl.appendChild(li);
+  }
+  // 各文件单独下载
   outPdfs.forEach((p) => {
     const li = document.createElement("li");
     const a = document.createElement("a");
@@ -183,6 +217,7 @@ async function downloadZip() {
   const zip = new JSZip();
   lastOutputs.pdfs.forEach((p) => zip.file(p.name, p.bytes));
   if (lastOutputs.excel) zip.file("船舶证书信息汇总.xlsx", lastOutputs.excel);
+  if (lastOutputs.mergedPdf) zip.file("船舶证书标注合并.pdf", lastOutputs.mergedPdf);
   const blob = await zip.generateAsync({ type: "blob" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);

@@ -323,7 +323,7 @@ function buildRecord(group, pages, fileName) {
 export async function processPdf(bytes, opts = {}) {
   const annualColor = opts.annualColor || "blue";
 
-  const pdfLibDoc = await PDFDocument.load(bytes);
+  const pdfLibDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
   const pdfjsDoc = await PDFJS.getDocument({
     data: bytes.slice(0),
     standardFontDataUrl: opts.standardFontDataUrl,
@@ -367,5 +367,27 @@ export async function processPdf(bytes, opts = {}) {
     records = validRecords;
   }
   const outBytes = await pdfLibDoc.save();
-  return { bytes: outBytes, records, red, blue };
+
+  // 诊断信息: 文本提取统计(帮助判断"扫描版PDF" vs "短语不匹配")
+  const totalItems = pages.reduce((s, p) => s + p.items.length, 0);
+  const totalLines = pages.reduce((s, p) => s + p.lines.length, 0);
+  const textStats = { numPages: pages.length, totalItems, totalLines, isLikelyScanned: totalItems < 5 };
+
+  return { bytes: outBytes, records, red, blue, textStats };
+}
+
+// ---------------------------------------------------------------- 合并多个 PDF 为一个
+// 将多份已标注的 PDF 按顺序合并成一份(保留所有标注框)。
+// pdf-lib 的 copyPages 可跨文档复制页面(含绘制内容)。
+export async function mergePdfs(pdfByteArrays, opts = {}) {
+  const merged = await PDFDocument.create();
+  for (const bytes of pdfByteArrays) {
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const indices = await merged.copyPages(src, src.getPageIndices());
+    indices.forEach((pg) => merged.addPage(pg));
+  }
+  // 设置合并后的元数据
+  merged.setTitle(opts.title || "船舶证书标注汇总");
+  merged.setCreator("ship-cert-tool");
+  return merged.save();
 }
