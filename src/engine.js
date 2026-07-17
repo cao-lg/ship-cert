@@ -231,12 +231,28 @@ export function findDateGroups(items) {
   return groups;
 }
 
-function drawGroup(libPage, g, SCALE, pageHeight, stroke, fill) {
-  const pad = 3;
-  const x0 = g.x0Dev / SCALE - pad;
-  const x1 = g.x1Dev / SCALE + pad;
-  const yTop = pageHeight - g.yTopDev / SCALE + pad;
-  const yBot = pageHeight - g.yBotDev / SCALE - pad;
+// 将 device-coord 日期组归一化到 [0,1] 范围(基于 pdf.js viewport 尺寸)。
+// 归一化后不再依赖 SCALE, drawGroup 只需乘以 libPage 实际尺寸即可正确定位,
+// 彻底消除"pdf.js viewport(cropBox+rotation) vs pdf-lib page(mediaBox)"尺寸不一致导致的偏移。
+function normalizeGroup(g, vpW, vpH) {
+  return {
+    x0: g.x0Dev / vpW,
+    x1: g.x1Dev / vpW,
+    yTop: g.yTopDev / vpH,
+    yBot: g.yBotDev / vpH,
+    iso: g.iso,
+  };
+}
+
+// 用归一化坐标画框: (x0,x1,yTop,yBot 均为 0~1), 乘以 libPage 实际尺寸即得 PDF 绘制坐标。
+// PDF 坐标系原点在左下角, Y 向上 → y 需翻转: normY → pageHeight * (1 - normY)
+function drawGroup(libPage, g, stroke, fill) {
+  const padN = 3 / libPage.getWidth();   // 归一化 padding
+  const padNH = 3 / libPage.getHeight();
+  const x0 = g.x0 - padN;
+  const x1 = g.x1 + padN;
+  const yTop = libPage.getHeight() * (1 - g.yTop) + padNH;
+  const yBot = libPage.getHeight() * (1 - g.yBot) - padNH;
   libPage.drawRectangle({
     x: x0, y: yBot,
     width: x1 - x0,
@@ -281,7 +297,7 @@ export function computeBoxes(pages, annualColor) {
       if (isExpiry) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
-          boxes.push({ libPage: p.libPage, SCALE: p.SCALE, pageHeight: p.pageHeight, stroke: RED, fill: RED_FILL, group: g });
+          boxes.push({ libPage: p.libPage, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH) });
           red++; used.add(keyOf(g));
         }
         return;
@@ -292,7 +308,7 @@ export function computeBoxes(pages, annualColor) {
       if (hasKind && hasSurvey) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
-          boxes.push({ libPage: p.libPage, SCALE: p.SCALE, pageHeight: p.pageHeight, stroke: color.stroke, fill: color.fill, group: g });
+          boxes.push({ libPage: p.libPage, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH) });
           blue++; used.add(keyOf(g));
         }
       }
@@ -536,14 +552,14 @@ export async function processPdf(bytes, opts = {}) {
       pt = lines.map((l) => l.text).join("\n");
     }
     const topHeading = detectTopHeading(lines, vp.height);
-    pages.push({ pno, items, lines, plainText: pt, topHeading, libPage, SCALE, pageHeight, ocrUsed });
+    pages.push({ pno, items, lines, plainText: pt, topHeading, libPage, SCALE, pageHeight, vpW: vp.width, vpH: vp.height, ocrUsed });
   }
   await pdfjsDoc.destroy();
 
-  // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙
+  // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙(归一化坐标, 无 SCALE 依赖)
   const { boxes, red, blue } = computeBoxes(pages, annualColor);
   for (const b of boxes) {
-    drawGroup(b.libPage, b.group, b.SCALE, b.pageHeight, b.stroke, b.fill);
+    drawGroup(b.libPage, b.group, b.stroke, b.fill);
   }
 
   const groups = groupCertificates(pages);

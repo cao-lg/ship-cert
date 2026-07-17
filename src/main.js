@@ -296,5 +296,5 @@ renderFiles();
 preloadOcr();
 
 // 构建信息(写在文件末尾确保在所有变量定义之后, 避免 esbuild 重排导致 TDZ)
-$("appVersion").textContent = "1.3.2";
-$("appBuildDate").textContent = "2026-07-18 07:35:00";
+$("appVersion").textContent = "1.3.3";
+$("appBuildDate").textContent = "2026-07-18 07:42:00";
