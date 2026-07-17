@@ -5,6 +5,11 @@ import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
 import { CERT_ORDER, certOrderKey } from "./kb.js";
 
+// 构建期注入(见 vite.config.js define): 版本号与更新日期, 写入页脚
+/* global __APP_VERSION__, __APP_BUILD_DATE__ */
+$("appVersion").textContent = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "—";
+$("appBuildDate").textContent = typeof __APP_BUILD_DATE__ !== "undefined" ? __APP_BUILD_DATE__ : "—";
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 const STD_FONTS = `${import.meta.env.BASE_URL || "/"}pdfjs-standard-fonts/`;
 pdfjsLib.GlobalWorkerOptions.standardFontDataUrl = STD_FONTS;

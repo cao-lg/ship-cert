@@ -87,3 +87,6 @@ tr:nth-child(even) td { background: #fafcff; }
 .download-list a { color: var(--brand); }
 
 footer { margin-top: 26px; text-align: center; color: var(--muted); font-size: 12px; }
+footer .ver { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+footer .copyright { margin-top: 6px; opacity: 0.85; }
+footer .copyright strong { color: var(--ok); }
