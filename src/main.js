@@ -22,6 +22,8 @@ const annualColorSel = $("annualColor");
 const mergePdfChk = $("mergePdf");
 const ocrChk = $("ocrToggle");
 const ocrStatusEl = $("ocrStatus");
+const ocrScaleSel = $("ocrScale");
+const ocrLangSel = $("ocrLang");
 const runBtn = $("runBtn");
 const clearBtn = $("clearBtn");
 const logWrap = $("logWrap");
@@ -120,7 +122,8 @@ async function run() {
         fileName: fname,
         standardFontDataUrl: STD_FONTS,
         ocr: ocrChk.checked,
-        ocrLang: "eng+chi_sim",
+        ocrLang: ocrLangSel.value,
+        ocrScale: Number(ocrScaleSel.value) || 3,
         onWarn: (m) => log(`  ${m}`),
       });
       grandRed += red;
@@ -268,27 +271,30 @@ runBtn.onclick = run;
 clearBtn.onclick = () => { files = []; renderFiles(); resultsEl.hidden = true; logWrap.hidden = true; };
 downloadZipBtn.onclick = downloadZip;
 
-// OCR 引擎预加载: 勾选时在后台提前下载语言包, 避免处理时卡在某页长时间等待
+// OCR 引擎预加载: 勾选时在后台提前下载所选语言包, 避免处理时卡在某页长时间等待
 async function preloadOcr() {
   if (!ocrChk.checked) {
     terminateOcr();
     if (ocrStatusEl) ocrStatusEl.textContent = "";
     return;
   }
-  if (ocrStatusEl) ocrStatusEl.textContent = "OCR引擎加载中…";
+  const lang = ocrLangSel.value;
+  if (ocrStatusEl) ocrStatusEl.textContent = lang === "eng" ? "OCR引擎(英文)加载中…" : "OCR引擎(中英)加载中…";
   try {
-    await ensureOcrWorker("eng+chi_sim", (m) => { if (ocrStatusEl && /%/.test(m)) ocrStatusEl.textContent = m.trim(); });
-    if (ocrStatusEl) ocrStatusEl.textContent = "✓ OCR引擎已就绪";
+    await ensureOcrWorker(lang, (m) => { if (ocrStatusEl && /%/.test(m)) ocrStatusEl.textContent = m.trim(); });
+    if (ocrStatusEl) ocrStatusEl.textContent = lang === "eng" ? "✓ OCR引擎已就绪(英文)" : "✓ OCR引擎已就绪(中英)";
   } catch (e) {
     if (ocrStatusEl) ocrStatusEl.textContent = "⚠️ OCR引擎加载失败（离线时扫描件将跳过OCR）";
   }
 }
 ocrChk.addEventListener("change", preloadOcr);
+// 切换语言(英文↔中英)时, 重新加载对应模型(小模型优先, 用中文时再加载大模型)
+ocrLangSel.addEventListener("change", preloadOcr);
 
 renderFiles();
 // 默认勾选 OCR: 页面加载即在后台预加载引擎(下载语言包), 处理时直接复用、无需等待
 preloadOcr();
 
 // 构建信息(写在文件末尾确保在所有变量定义之后, 避免 esbuild 重排导致 TDZ)
-$("appVersion").textContent = "1.3.1";
-$("appBuildDate").textContent = "2026-07-18 07:20:00";
+$("appVersion").textContent = "1.3.2";
+$("appBuildDate").textContent = "2026-07-18 07:35:00";

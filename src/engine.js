@@ -19,7 +19,7 @@ export function configurePdfjs(lib) { PDFJS = lib; }
 // OCR 引擎运行时从 CDN 动态加载(+/esm 已内联全部依赖), 不进构建产物;
 // 加载失败(离线等)则静默降级为"仅文字层", 不影响其他 PDF 处理。
 const OCR_SCALE = 3;            // 渲染分辨率倍数: 2~3 已足够清晰证书文字; 4 过于细腻且慢约 2 倍
-const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
+const OCR_LANG = "eng";        // 默认仅英文(模型~10MB, 加载快); 含中文标签的证书在页面选"中英双语"(~30MB)
 const MIN_MEANINGFUL_TOKENS = 12; // 一页若有≥12个"有意义"文字 token, 视为数字版(有可用文字层), 跳过 OCR
 // 有意义 token: 去零宽/控制字符后长度≥2, 且含字母/数字/汉字(排除纯标点、孤立符号、乱码断字)
 function countMeaningfulTokens(items) {
@@ -105,7 +105,8 @@ export function ocrWordsToItems(words, scale) {
 }
 
 // 浏览器端: 用 pdf.js 把页面渲染到 canvas, 灰度预处理后复用持久 worker 识别, 返回 device-coord items
-async function ocrPageItems(page, lang, onWarn) {
+// scale 可由页面传入(默认 OCR_SCALE), 越高越准但越慢
+async function ocrPageItems(page, lang, onWarn, scale = OCR_SCALE) {
   if (typeof document === "undefined") return []; // Node 环境无 canvas, 跳过
   let worker;
   try {
@@ -114,7 +115,7 @@ async function ocrPageItems(page, lang, onWarn) {
     if (onWarn) onWarn(`  ⚠️ OCR引擎加载失败(需联网首次加载): ${e.message}`);
     return [];
   }
-  const viewport = page.getViewport({ scale: OCR_SCALE });
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
@@ -139,7 +140,7 @@ async function ocrPageItems(page, lang, onWarn) {
     if (onWarn) onWarn(`  ⚠️ OCR识别失败: ${e.message}`);
     return [];
   }
-  return ocrWordsToItems(data.words, OCR_SCALE);
+  return ocrWordsToItems(data.words, scale);
 }
 
 const MONTH_ALT = Object.keys(MONTHS).join("|");
@@ -519,7 +520,7 @@ export async function processPdf(bytes, opts = {}) {
     let ocrUsed = false;
     if (opts.ocr && typeof document !== "undefined" && !pageHasUsableText(items)) {
       try {
-        const ocrItems = await ocrPageItems(page, opts.ocrLang || OCR_LANG, opts.onWarn);
+        const ocrItems = await ocrPageItems(page, opts.ocrLang || OCR_LANG, opts.onWarn, opts.ocrScale || OCR_SCALE);
         if (ocrItems.length > items.length) { items.length = 0; items.push(...ocrItems); ocrUsed = true; }
       } catch (e) {
         if (opts.onWarn) opts.onWarn(`  ⚠️ OCR 失败: ${e.message}`);
