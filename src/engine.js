@@ -20,7 +20,31 @@ export function configurePdfjs(lib) { PDFJS = lib; }
 // 加载失败(离线等)则静默降级为"仅文字层", 不影响其他 PDF 处理。
 const OCR_SCALE = 4;            // 渲染分辨率倍数(越高OCR越准, 越大越慢) — 由 3 提到 4 提升精度
 const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
-const OCR_SPARSE_ITEMS = 5;     // 单页文字 token 少于此值视为扫描页, 触发 OCR
+const MIN_MEANINGFUL_TOKENS = 12; // 一页若有≥12个"有意义"文字 token, 视为数字版(有可用文字层), 跳过 OCR
+// 有意义 token: 去零宽/控制字符后长度≥2, 且含字母/数字/汉字(排除纯标点、孤立符号、乱码断字)
+function countMeaningfulTokens(items) {
+  let n = 0;
+  for (const it of items) {
+    const s = cleanInvisible(String(it.str || "")).trim();
+    if (s.length >= 2 && /[A-Za-z0-9\u4e00-\u9fff]/.test(s)) n++;
+  }
+  return n;
+}
+// 该页是否已有"可用文字层":
+//   1) 足够多有意义 token(数字版证书页通常几十~上百个);
+//   2) 或已能直接抽到一个日期(说明文字层足以抽取, 无需 OCR);
+//   3) 或已含证书标题关键词(如 CERTIFICATE/REGISTRY/证书, 标题页 token 少但有定性信号)。
+// 三者皆否 → 视为扫描/无文字层页, 才走 OCR。
+function pageHasUsableText(items) {
+  if (countMeaningfulTokens(items) >= MIN_MEANINGFUL_TOKENS) return true;
+  const joined = items.map((it) => normSp(String(it.str || ""))).join(" ");
+  if (UNIQUE_TITLES.some(([kw]) => joined.includes(normSp(kw)))) return true;
+  if (TITLE_HEADS.some(([k]) => joined.includes(normSp(k)))) return true;
+  for (const it of items) {
+    if (toIso(normToken(cleanInvisible(String(it.str || ""))))) return true;
+  }
+  return false;
+}
 const TESSERACT_ESM = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/+esm";
 // 去掉所有空白(不转小写, 保留大小写供标题识别) — OCR 中文常拆成"有效 日期", 必须并拢。
 // 同时做 NFKC(全角→半角) + 去零宽/控制字符, 处理 Tesseract 常见的全角数字/标点与隐藏字符。
@@ -433,9 +457,10 @@ export async function processPdf(bytes, opts = {}) {
       }))
       .filter((it) => it.str && it.str.trim().length);
 
-    // 双保险: 文字层稀疏(扫描版PDF)时, 用 OCR 补充识别该页
+    // 双保险: 仅当该页文字层不可用(扫描版/无文字层)时, 才用 OCR 补充识别该页。
+    // 数字版 PDF 直接用 pdf.js 文字层, 不浪费 OCR 时间。
     let ocrUsed = false;
-    if (opts.ocr && typeof document !== "undefined" && items.length < OCR_SPARSE_ITEMS) {
+    if (opts.ocr && typeof document !== "undefined" && !pageHasUsableText(items)) {
       try {
         const ocrItems = await ocrPageItems(page, opts.ocrLang || OCR_LANG, opts.onWarn);
         if (ocrItems.length > items.length) { items.length = 0; items.push(...ocrItems); ocrUsed = true; }

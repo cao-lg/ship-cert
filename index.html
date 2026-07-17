@@ -55,8 +55,8 @@
         <label class="merge-opt" title="将所有标注后的PDF合并成一份文件，方便归档">
           <input type="checkbox" id="mergePdf" /> 合并为一个PDF
         </label>
-        <label class="merge-opt" title="文字层稀疏的扫描版PDF: 用 pdf.js 渲染+ tesseract.js 识别, 双保险补识别日期">
-          <input type="checkbox" id="ocrToggle" checked /> OCR识别(扫描版)
+        <label class="merge-opt" title="自动判断: 数字版PDF直接用pdf.js文字层(快); 只有文字层稀疏/扫描件才用 tesseract.js 识别。不勾则完全不做OCR(扫描件将无法识别日期)">
+          <input type="checkbox" id="ocrToggle" checked /> OCR识别（自动·仅扫描/无文字层页）
         </label>
         <button type="button" id="runBtn" class="primary" disabled>开始处理</button>
         <button type="button" id="clearBtn" class="ghost" disabled>清空</button>

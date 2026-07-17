@@ -129,9 +129,15 @@ async function run() {
 
       // 诊断日志
       let diag = "";
-      if (textStats.usedOcr) diag = ` 🔍 OCR识别了 ${textStats.ocrPages}/${textStats.numPages} 页`;
-      else if (textStats.isLikelyScanned) diag = ` ⚠️ 可能是扫描版PDF(文字极少,${textStats.totalItems}个文本元素) — 勾选"OCR识别"可启用双保险`;
-      else if (red === 0 && blue === 0 && textStats.totalLines > 3) diag = ` ⚠️ 有文字(${textStats.totalLines}行)但未匹配到日期短语,可能是非常规格式`;
+      if (textStats.usedOcr) {
+        diag = ` 🔍 OCR识别了 ${textStats.ocrPages}/${textStats.numPages} 页(扫描/无文字层)`;
+      } else if (textStats.isLikelyScanned) {
+        diag = ` ⚠️ 可能是扫描版PDF(文字极少,${textStats.totalItems}个文本元素) — 勾选"OCR识别"才会自动识别`;
+      } else if (red === 0 && blue === 0 && textStats.totalLines > 3) {
+        diag = ` ⚠️ 有文字(${textStats.totalLines}行)但未匹配到日期短语, 可能是非常规格式`;
+      } else {
+        diag = ` ✓ pdf.js文字层可读, 未触发OCR(快)`;
+      }
 
       log(`  标注完成: 红框=${red}  年检框=${blue}  证书=${records.length}  页数=${textStats.numPages}${diag}`);
       records.forEach((r, i) =>
