@@ -111,17 +111,28 @@ export function buildLines(items) {
 
 function detectTopHeading(lines, vpHeight) {
   const half = vpHeight * 0.5;
+  const EN_HEAD = ["CERTIFICATE", "REGISTRY", "REGISTRATION"];
+  const ZH_HEAD = ["证书", "登记", "执照"]; // 中文标题词(仅限页上半部, 避免正文误触发)
   for (const l of lines) {
     const yAvg = l.items.reduce((s, i) => s + i.y, 0) / l.items.length;
     if (yAvg > half) continue;
     const up = l.text.toUpperCase();
-    if (!(up.includes("CERTIFICATE") || up.includes("REGISTRY") || up.includes("REGISTRATION"))) continue;
-    const letters = [...l.text].filter((c) => /[A-Za-z]/.test(c));
-    if (!letters.length) continue;
-    const upc = letters.filter((c) => c === c.toUpperCase() && c !== c.toLowerCase()).length;
-    if (upc / letters.length < 0.7) continue;
-    for (const [key, name] of TITLE_HEADS) {
-      if (up.includes(key)) return name;
+    // 英文标题: 含 CERTIFICATE 等且大写占比高
+    if (EN_HEAD.some((k) => up.includes(k))) {
+      const letters = [...l.text].filter((c) => /[A-Za-z]/.test(c));
+      if (letters.length) {
+        const upc = letters.filter((c) => c === c.toUpperCase() && c !== c.toLowerCase()).length;
+        if (upc / letters.length >= 0.7) {
+          for (const [key, name] of TITLE_HEADS) if (up.includes(key)) return name;
+        }
+      }
+    }
+    // 中文/通用标题词: 中文无大小写之分, 直接命中(也覆盖 OCR 识别出的标题行)
+    if (ZH_HEAD.some((k) => l.text.includes(k))) {
+      const t = detectType(l.text);
+      if (t) return t;
+      for (const [key, name] of TITLE_HEADS) if (up.includes(key)) return name;
+      return "证书";
     }
   }
   return null;
