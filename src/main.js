@@ -3,6 +3,7 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import JSZip from "jszip";
 import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
+import { CERT_ORDER, certOrderKey } from "./kb.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 const STD_FONTS = `${import.meta.env.BASE_URL || "/"}pdfjs-standard-fonts/`;
@@ -105,8 +106,7 @@ async function run() {
     return;
   }
 
-  const outPdfs = [];
-  const allRecords = [];
+  const entries = []; // { outPdf, records }
   let grandRed = 0, grandBlue = 0;
 
   for (const x of files) {
@@ -125,8 +125,7 @@ async function run() {
       grandRed += red;
       grandBlue += blue;
       const base = fname.replace(/\.pdf$/i, "");
-      outPdfs.push({ name: `${base}-标注.pdf`, bytes: outBytes });
-      allRecords.push(...records);
+      entries.push({ outPdf: { name: `${base}-标注.pdf`, bytes: outBytes }, records });
 
       // 诊断日志
       let diag = "";
@@ -142,6 +141,18 @@ async function run() {
       log(`  ✗ 失败: ${e.message}`);
     }
   }
+
+  // 按证书类型指定顺序排序(国籍→最低配员→载重线→安全构造→保安→防油污→吨位→其它),
+  // 多证合一的 PDF 以其"主证书类型"(记录中最小排序键)定位, IOPP 与 IOPP Form A 同属 1205 自然相邻。
+  const keyOf = (e) => {
+    let k = 999;
+    for (const r of e.records) { const kk = certOrderKey(r.type); if (kk < k) k = kk; }
+    return k;
+  };
+  entries.sort((a, b) => keyOf(a) - keyOf(b));
+  const outPdfs = entries.map((e) => e.outPdf);
+  const allRecords = entries.flatMap((e) => e.records);
+  log(`\n[排序] 合并/汇总顺序: ${outPdfs.map((p) => p.name.replace(/-标注\.pdf$/, "")).join(" → ")}`);
 
   // Excel 汇总
   let excelBytes = null;

@@ -72,6 +72,7 @@ export const KB = {
     { text: "Cargo Ship Safety Construction Certificate", code: "2205" },
     { text: "International oil pollution prevention certificate", code: "1205" },
     { text: "IOPP", code: "1205" },
+    { text: "Certificate of Registry", code: "1101" },
   ],
 };
 
@@ -83,3 +84,13 @@ export const ANNUAL_COLORS = {
 };
 export const RED = [1.0, 0.0, 0.0];
 export const RED_FILL = [1.0, 0.85, 0.85];
+
+// 合并 / 汇总时证书的指定排序(用户需求):
+// 国籍(REG) → 最低安全配员(MM) → 载重线(LL) → 安全构造(SC) → 保安(ISSC) → 防油污(IOPP/IOPP Form A) → 吨位(TON) → 其它
+// 不在列表中的证书(如 COF/符合证明)排在最后。
+export const CERT_ORDER = ["1101", "1102", "1202", "2205", "2222", "1205", "1201"];
+export function certOrderKey(type) {
+  const code = String(type || "").split("-")[0].trim();
+  const i = CERT_ORDER.indexOf(code);
+  return i < 0 ? 999 : i;
+}

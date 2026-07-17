@@ -2,6 +2,55 @@
 // 与 Python 版 cert_tool.py 的对应逻辑保持一致, 浏览器与 Node 共用(便于测试)。
 import { KB } from "./kb.js";
 
+// ---------- 文本清洗(文字层 & OCR 双保险共用) ----------
+// OCR / 复制粘贴常混入"看不见"的字符, 导致字符串比较、日期解析、关键词命中全部失配。
+// 经社区实践 + 本项目扫描件实测, 需处理以下几类:
+//  1) 零宽/控制/不可见字符: U+200B 零宽空格、U+200C/200D 连字符、U+FEFF BOM、U+00AD 软连字符、
+//     U+2028/2029 行/段分隔符、U+2060 词连接符、LRM/RLM(U+200E/200F)等;
+//  2) 全角/半角同形字符: Tesseract 易混入 ２０２４ / ： / － / ． / （ ） 等全角字符,
+//     Unicode NFKC 归一化可把它们统一成半角;
+//  3) 连字符家族: en/em/figure/horizontal bar/minus 等形似 "-", 统一成半角连字符便于日期正则;
+//  4) 形近字符(仅限数字日期语境): O↔0, I/l/|↔1, S↔5, B↔8, Z↔2, G↔6, Q↔0。
+// 参考: gennai.io "8 Common OCR Errors"(0/O,1/l,5/S); truegeometry "OCR errors";
+//       peasytext/kitlab "invisible characters"(U+200B/U+FEFF/U+00AD); CSDN pytesseract 工业级排查。
+const INVISIBLE_RE = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B\u200C\u200D\u200E\u200F\u2028\u2029\u2060\uFEFF]/g;
+
+export function cleanInvisible(s) {
+  return String(s).replace(INVISIBLE_RE, "");
+}
+// 日期扫描/短语定位的"准备文本": NFKC 全角→半角 + 去不可见 + 连字符家族统一为 "-" (保留空白, 兼容 "16 March 2031")
+const DASH_RE = /[\u2010-\u2015\u2212\uFF0D\u007E\uFF5E]/g;
+export function prepDateText(s) {
+  return cleanInvisible(String(s).normalize("NFKC")).replace(DASH_RE, "-");
+}
+// 单个日期串归一化(供 toIso): 全角→半角 + 连字符统一 + 形近字母→数字(仅当串中无 3+ 连续字母, 避免破坏 OCT/Mar 等月份名)
+export function normalizeDateString(s) {
+  let t = prepDateText(s);
+  if (!/[A-Za-z]{3,}/.test(t)) {
+    t = t.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/[Ss]/g, "5")
+         .replace(/[Bb]/g, "8").replace(/[Zz]/g, "2").replace(/[Gg]/g, "6").replace(/[Qq]/g, "0");
+  }
+  return t;
+}
+// 空格无关归一化: 去不可见 + NFKC + 转小写 + 去所有空白。用于标签/关键词匹配(OCR 拆词保护)。
+export function normSp(s) {
+  return cleanInvisible(String(s).normalize("NFKC")).toLowerCase().replace(/\s+/g, "");
+}
+// 在含空白文本中做"空格无关"短语定位, 返回该短语首字符在原文(保留空白)中的下标。
+// 让 firstDateAfter 的"短语位置"与"日期下标"处于同一坐标系, 修正此前去空白导致两者错位的问题。
+export function phraseIndex(text, needleNoWs, from = 0) {
+  if (!needleNoWs) return -1;
+  const clean = [];
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (/\s/.test(c)) continue;
+    clean.push({ ch: c.toLowerCase(), idx: i });
+  }
+  const flat = clean.map((x) => x.ch).join("");
+  const p = flat.indexOf(needleNoWs);
+  return p < 0 ? -1 : clean[p].idx;
+}
+
 export const MONTHS = {
   January: 1, February: 2, March: 3, April: 4, May: 5, June: 6,
   July: 7, August: 8, September: 9, October: 10, November: 11, December: 12,
@@ -44,19 +93,12 @@ const DATE_RES = [
 ];
 
 export function normToken(tok) {
-  let t = tok.replace(/[.,;:)\]]+$/, "").replace(/^[.]+/, "");
-  return t;
-}
-
-// 空格无关归一化: 转小写并去掉所有空白。
-// 用途: OCR 常把"有效 日期"拆成带空格的词, 而知识库短语无空格,
-//       直接 includes 必失配。统一去空格后再比较即可兼容中英文短语。
-export function normSp(s) {
-  return String(s).toLowerCase().replace(/\s+/g, "");
+  let t = prepDateText(tok).trim();
+  return t.replace(/[.,;:)\]]+$/, "").replace(/^[.]+/, "");
 }
 
 export function toIso(text) {
-  text = (text || "").trim();
+  text = normalizeDateString(text).trim();
   let m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = text.match(new RegExp(`^(\\d{1,2})\\s+(${MONTH_ALT})\\s+(\\d{4})$`, "i"));
@@ -126,7 +168,7 @@ export function detectType(fullRaw) {
 // 不能用于在长文本里挖日期子串。这里改用【未锚定】的 DATEPAT 全局正则逐段扫描,
 // 用 lastIndex 手动推进(标准 exec 循环), 既不会无限循环, 也不会因拼接 phrase+DATEPAT 巨型正则而原生崩溃。
 const DATE_SCAN = new RegExp(DATEPAT, "gi");
-export function extractAllDates(text) {
+function scanDates(text) {
   const found = [];
   DATE_SCAN.lastIndex = 0;
   let m;
@@ -138,24 +180,26 @@ export function extractAllDates(text) {
   found.sort((a, b) => a.index - b.index);
   return found;
 }
+export function extractAllDates(text) {
+  return scanDates(prepDateText(text));
+}
 
 // 在 text 中, 对每个短语(按优先级)取其后最近的日期。
 // 改为"先定位短语、再在其后窗口内取最近日期", 不再拼接 phrase+DATEPAT 巨型正则, 规避原生崩溃。
 export function firstDateAfter(text, phrases) {
-  const dates = extractAllDates(text);
+  const base = prepDateText(text);          // 与日期扫描同一坐标系(保留空白)
+  const dates = scanDates(base);
   if (!dates.length) return "";
-  const n = normSp(text);
   for (const ph of phrases) {
-    const nph = normSp(ph);
-    let idx = n.indexOf(nph);
+    let idx = phraseIndex(base, normSp(ph));
     while (idx >= 0) {
       let best = null, bestDist = Infinity;
       for (const d of dates) {
-        const dist = d.index - idx;
+        const dist = d.index - idx;          // base 与 d.index 同坐标系, 比较有效
         if (dist >= 0 && dist < bestDist) { bestDist = dist; best = d.iso; }
       }
       if (best) return best;
-      idx = n.indexOf(nph, idx + 1);
+      idx = phraseIndex(base, normSp(ph), idx + 1);
     }
   }
   return "";
@@ -168,26 +212,34 @@ export function escapeRegExp(s) {
 // 抽取证书编号: 优先 Certificate No, 其次 Distinctive Number or Letters(吨位证), 再次 编号(中文证)。
 // 关键: DNV 的 "Certificate No:" 标签行与编号常不在同一页, 故在全文搜所有匹配,
 // 跳过 "Form" 等明显非编号的 token, 只取含数字的真实编号(避免误抓页脚 "Form code")。
+// OCR/版式常把编号与后缀粘连(如 "1186445Form"、"2359973https://..."), 用 cleanNum 剥离。
+function cleanNum(tok) {
+  return tok
+    .replace(/https?:\/\/\S*$/i, "")   // 去掉附着的 URL(LR 证书页脚)
+    .replace(/form$/i, "")             // 去掉附着的 Form(IOPP Form A / 吨位证 Distinctive Number 行)
+    .replace(/[;:)\].,\s]+$/g, "")      // 去尾部标点/空白
+    .replace(/^[;:(\].,\s]+/g, "");     // 去头部标点
+}
 export function extractNumber(text) {
-  const t = String(text);
+  const t = cleanInvisible(String(text).normalize("NFKC"));
   const lines = t.split(/\r?\n/);
   // \s* 兼容 OCR 去空格后的"certificateno:..."(无空格)与正常"Certificate No: ..."
   // 第 1 遍: Certificate No(全文, 取含数字且非 Form 的编号)
   const certRe = /certificate\s*no\.?\s*[:：]?\s*(\S+)/gi;
   let m;
   while ((m = certRe.exec(t))) {
-    const tok = m[1].replace(/[;:]$/, "");
+    const tok = cleanNum(m[1]);
     if (/\d/.test(tok) && !/^form$/i.test(tok)) return tok;
   }
   // 第 2 遍: Distinctive Number or Letters(吨位证标识)
   for (const line of lines) {
     const dm = line.match(/distinctive\s*number\s*or\s*letters\s*[:：]?\s*(\S+)/i);
-    if (dm) return dm[1].replace(/[;:]$/, "");
+    if (dm) { const tok = cleanNum(dm[1]); if (/\d/.test(tok)) return tok; }
   }
   // 第 3 遍: 中文 编号
   for (const line of lines) {
     const nm = line.match(/编号\s*(?:no\.?\s*)?[:：]?\s*(\S+)/i);
-    if (nm) return nm[1].replace(/[;:]$/, "");
+    if (nm) { const tok = cleanNum(nm[1]); if (/\d/.test(tok)) return tok; }
   }
   return "";
 }

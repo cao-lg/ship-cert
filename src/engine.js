@@ -6,7 +6,7 @@ import { KB, ANNUAL_COLORS, RED, RED_FILL } from "./kb.js";
 import {
   MONTHS, isMonth, normToken, normSp, toIso, detectType, detectSociety,
   extractNumber, firstDateAfter, EXPIRY_PHRASES, ISSUE_PHRASES,
-  UNIQUE_TITLES, TITLE_HEADS,
+  UNIQUE_TITLES, TITLE_HEADS, cleanInvisible,
 } from "./helpers.js";
 
 // pdf.js 实例可注入(浏览器用主构建, Node 测试用 legacy 构建)
@@ -22,8 +22,9 @@ const OCR_SCALE = 4;            // 渲染分辨率倍数(越高OCR越准, 越大
 const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
 const OCR_SPARSE_ITEMS = 5;     // 单页文字 token 少于此值视为扫描页, 触发 OCR
 const TESSERACT_ESM = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/+esm";
-// 去掉所有空白(不转小写, 保留大小写供标题识别) — OCR 中文常拆成"有效 日期", 必须并拢
-const stripWs = (s) => String(s).replace(/\s+/g, "");
+// 去掉所有空白(不转小写, 保留大小写供标题识别) — OCR 中文常拆成"有效 日期", 必须并拢。
+// 同时做 NFKC(全角→半角) + 去零宽/控制字符, 处理 Tesseract 常见的全角数字/标点与隐藏字符。
+const stripWs = (s) => cleanInvisible(String(s).normalize("NFKC")).replace(/\s+/g, "");
 let _tesseractMod = null;
 async function loadTesseract() {
   if (_tesseractMod) return _tesseractMod;
@@ -397,8 +398,9 @@ function buildRecord(group, pages, fileName) {
   if (ctype.includes("吨位") && !uniqAnnual.length) parts.push("国际吨位证书（1969），长期有效，无年度检验");
   if (fileName) parts.push(`来源:${fileName}`);
 
-  // 判断是否为幽灵记录(无可识别信息)
-  const _ghost = !ctype.includes("-") && !cno && !issue && !expiry && !annual;
+  // 判断是否为幽灵记录: 无真实证书类型编码(无 "XXXX-" 前缀) 且 无签发/有效/年检日期。
+  // 注意: 仅有编号(cno)而无类型/日期的组通常是分组过切产生的垃圾组, 不应写入 Excel。
+  const _ghost = !ctype.includes("-") && !issue && !expiry && !annual;
 
   return { type: ctype, no: cno, issue, expiry, annual, remark: parts.join("；"), _ghost };
 }
