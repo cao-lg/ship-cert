@@ -14,9 +14,16 @@ import { KB } from "./kb.js";
 // 参考: gennai.io "8 Common OCR Errors"(0/O,1/l,5/S); truegeometry "OCR errors";
 //       peasytext/kitlab "invisible characters"(U+200B/U+FEFF/U+00AD); CSDN pytesseract 工业级排查。
 const INVISIBLE_RE = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B\u200C\u200D\u200E\u200F\u2028\u2029\u2060\uFEFF]/g;
+// 保留常规空白(\t\n\r)的版本: 用于依赖"空白/换行作 token 边界"的场景(如 extractNumber),
+// 否则删掉换行会把跨行 token 粘连(如 "2359973" + 换行 + "valid" → "2359973valid")。
+const INVISIBLE_KEEP_WS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u200B\u200C\u200D\u200E\u200F\u2028\u2029\u2060\uFEFF]/g;
 
 export function cleanInvisible(s) {
   return String(s).replace(INVISIBLE_RE, "");
+}
+// 去不可见字符但保留 \t\n\r 与普通空格(供 extractNumber 等以空白为边界的解析用)
+export function cleanInvisibleKeepWs(s) {
+  return String(s).replace(INVISIBLE_KEEP_WS_RE, "");
 }
 // 日期扫描/短语定位的"准备文本": NFKC 全角→半角 + 去不可见 + 连字符家族统一为 "-" (保留空白, 兼容 "16 March 2031")
 const DASH_RE = /[\u2010-\u2015\u2212\uFF0D\u007E\uFF5E]/g;
@@ -144,6 +151,8 @@ const TYPE_BY_CODE = Object.fromEntries(KB.cert_types.map((ct) => [ct.code, `${c
 export const TYPE_MAP = KB.cert_types.flatMap((ct) => ct.keywords.map((kw) => [kw, TYPE_BY_CODE[ct.code]]));
 export const TITLE_HEADS = KB.title_heads.map((th) => [th.text, TYPE_BY_CODE[th.code]]);
 export const UNIQUE_TITLES = KB.unique_titles.map((ut) => [ut.text, TYPE_BY_CODE[ut.code]]);
+// LR 表单号 → 类型(强信号, 用于扫描件标题残缺时的兜底)
+const FORM_CODE = Object.fromEntries((KB.form_codes || []).map((fc) => [fc.form, TYPE_BY_CODE[fc.code]]));
 
 export const EXPIRY_PHRASES = KB.phrases.expiry;
 export const ANNUAL_PHRASES = KB.phrases.annual_survey;
@@ -156,7 +165,15 @@ export function detectType(fullRaw) {
   for (const [kw, name] of UNIQUE_TITLES) {
     if (n.includes(normSp(kw))) return name;
   }
-  // 2) 全文关键词(空格无关, 中英统一)
+  // 2) LR 表单号(强信号): 扫描件标题残缺时按 "form2221" 等兜底, 早于泛化关键词
+  //    (避免正文里"Exemption Certificate has not been issued"误判为免除证书)。
+  const formRe = /form(\d{3,4}[a-z]?)/g;
+  let fm;
+  while ((fm = formRe.exec(n))) {
+    const t = FORM_CODE[fm[1]];
+    if (t) return t;
+  }
+  // 3) 全文关键词(空格无关, 中英统一)
   for (const [kw, name] of TYPE_MAP) {
     if (n.includes(normSp(kw))) return name;
   }
@@ -213,33 +230,51 @@ export function escapeRegExp(s) {
 // 关键: DNV 的 "Certificate No:" 标签行与编号常不在同一页, 故在全文搜所有匹配,
 // 跳过 "Form" 等明显非编号的 token, 只取含数字的真实编号(避免误抓页脚 "Form code")。
 // OCR/版式常把编号与后缀粘连(如 "1186445Form"、"2359973https://..."), 用 cleanNum 剥离。
+// ★关键(OCR 扫描件): 去空格后编号会与后文英文单词直接粘连(如 "2170691Page1of9Issued..."),
+//   此时 (\S+) 会一路吞到整行/整页。sliceGlued 在"首个驼峰英文单词起点"(大写后接小写, 如 Page/Issued)
+//   处截断, 把编号从后文正文里切出来; 证书编号只由 数字/大写字母/ / . - 组成, 不含小写。
+function sliceGlued(tok) {
+  const m = tok.match(/^(.*?)(?=[A-Z][a-z])/); // 截到"首个 大写+小写 单词"之前
+  return (m && m[1]) ? m[1] : tok;
+}
 function cleanNum(tok) {
-  return tok
+  return sliceGlued(tok)
     .replace(/https?:\/\/\S*$/i, "")   // 去掉附着的 URL(LR 证书页脚)
     .replace(/form$/i, "")             // 去掉附着的 Form(IOPP Form A / 吨位证 Distinctive Number 行)
     .replace(/[;:)\].,\s]+$/g, "")      // 去尾部标点/空白
-    .replace(/^[;:(\].,\s]+/g, "");     // 去头部标点
+    .replace(/^[;:(\].,\s]+/g, "")      // 去头部标点
+    .replace(/([0-9])[A-Za-z]{1,4}$/, "$1"); // 去掉数字后残留的 1~4 个尾字母(如 "2170691P")
 }
 export function extractNumber(text) {
-  const t = cleanInvisible(String(text).normalize("NFKC"));
+  const t = cleanInvisibleKeepWs(String(text).normalize("NFKC")); // 保留换行, 避免跨行 token 粘连
   const lines = t.split(/\r?\n/);
+  const good = (tok) => /\d/.test(tok) && !/^form$/i.test(tok) && tok.length <= 32;
   // \s* 兼容 OCR 去空格后的"certificateno:..."(无空格)与正常"Certificate No: ..."
   // 第 1 遍: Certificate No(全文, 取含数字且非 Form 的编号)
   const certRe = /certificate\s*no\.?\s*[:：]?\s*(\S+)/gi;
   let m;
   while ((m = certRe.exec(t))) {
     const tok = cleanNum(m[1]);
-    if (/\d/.test(tok) && !/^form$/i.test(tok)) return tok;
+    if (good(tok)) return tok;
   }
-  // 第 2 遍: Distinctive Number or Letters(吨位证标识)
+  // 第 2 遍: Record No(IOPP Form A 等"记录/构造与设备记录"的编号, 如 2170691/01)
+  const recRe = /record\s*no\.?\s*[:：]?\s*(\S+)/gi;
+  while ((m = recRe.exec(t))) {
+    const tok = cleanNum(m[1]);
+    if (good(tok)) return tok;
+  }
+  // 第 3 遍: Distinctive Number or Letters(吨位证标识)
   for (const line of lines) {
     const dm = line.match(/distinctive\s*number\s*or\s*letters\s*[:：]?\s*(\S+)/i);
-    if (dm) { const tok = cleanNum(dm[1]); if (/\d/.test(tok)) return tok; }
+    if (dm) { const tok = cleanNum(dm[1]); if (good(tok)) return tok; }
   }
-  // 第 3 遍: 中文 编号
+  // 第 4 遍: 中文 编号
   for (const line of lines) {
     const nm = line.match(/编号\s*(?:no\.?\s*)?[:：]?\s*(\S+)/i);
-    if (nm) { const tok = cleanNum(nm[1]); if (/\d/.test(tok)) return tok; }
+    if (nm) { const tok = cleanNum(nm[1]); if (good(tok)) return tok; }
   }
+  // 第 5 遍(兜底): LR 版式页眉 "<证书号> Page 1 of N"(标签缺失的扫描件, 如 ISSC)
+  const pm = t.match(/(\d{4,8})\s*page\s*\d+\s*of\s*\d+/i);
+  if (pm) return pm[1];
   return "";
 }

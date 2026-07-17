@@ -40,16 +40,16 @@ export const KB = {
     number: ["certificate no.", "编号 no.", "no."],
   },
   cert_types: [
-    { code: "2205", name: "货船构造安全证书", keywords: ["CONSTRUCTION CERTIFICATE", "货船构造安全证书", "构造安全证书"] },
+    { code: "2205", name: "货船构造安全证书", keywords: ["CARGO SHIP SAFETY CONSTRUCTION", "SAFETY CONSTRUCTION CERTIFICATE", "SAFETY CONSTRUCTION", "CONSTRUCTION CERTIFICATE", "货船构造安全证书", "构造安全证书"] },
     { code: "2206", name: "货船设备安全证书", keywords: ["EQUIPMENT CERTIFICATE", "货船设备安全证书", "设备安全证书"] },
     { code: "2207", name: "货船无线电安全证书", keywords: ["RADIO CERTIFICATE", "货船无线电安全证书", "无线电安全证书"] },
     { code: "1209", name: "海上船舶散装运输危险化学品适装证书", keywords: ["DANGEROUS CHEMICALS IN BULK", "危险化学品适装证书", "危险化学品"] },
     { code: "1210", name: "海上船舶散装运输液化气体适装证书", keywords: ["LIQUEFIED GASES IN BULK", "液化气体适装证书", "液化气体"] },
     { code: "2209", name: "国际防止散装运输有毒液体物质污染证书", keywords: ["NOXIOUS LIQUID SUBSTANCES IN BULK", "有毒液体物质污染证书", "有毒液体物质"] },
-    { code: "2222", name: "国际船舶保安证书", keywords: ["INTERNATIONAL SHIP SECURITY", "国际船舶保安证书", "船舶保安证书"] },
+    { code: "2222", name: "国际船舶保安证书", keywords: ["INTERNATIONAL SHIP SECURITY", "SECURITY OF SHIPS AND OF PORT FACILITIES", "SECURITY OF SHIPS", "ISPS CODE", "ISPS", "国际船舶保安证书", "船舶保安证书"] },
     { code: "1201", name: "海上船舶吨位证书", keywords: ["INTERNATIONAL TONNAGE", "国际吨位证书", "吨位证书"] },
     { code: "1202", name: "海上船舶载重线证书", keywords: ["INTERNATIONAL LOAD LINE", "国际载重线证书", "载重线证书"] },
-    { code: "1205", name: "海上船舶防止油污证书", keywords: ["INTERNATIONAL OIL POLLUTION", "PREVENTION CERTIFICATE", "IOPP", "国际防止油污证书", "防止油污证书"] },
+    { code: "1205", name: "海上船舶防止油污证书", keywords: ["INTERNATIONAL OIL POLLUTION", "PREVENTION OF POLLUTION FROM SHIPS", "OIL POLLUTION", "IOPP", "国际防止油污证书", "防止油污证书"] },
     { code: "1102", name: "船舶最低安全配员证书", keywords: ["MINIMUM SAFE MANNING", "最低安全配员证书", "安全配员证书"] },
     { code: "1104", name: "安全管理证书", keywords: ["SAFETY MANAGEMENT CERTIFICATE", "安全管理证书"] },
     { code: "1105", name: "油污损害民事责任保险或其他财务保证证书", keywords: ["CERTIFICATE OF INSURANCE OR OTHER FINANCIAL SECURITY IN RESPECT OF CIVIL LIABILITY FOR OIL POLLUTION DAMAGE", "CIVIL LIABILITY FOR OIL POLLUTION DAMAGE", "油污损害民事责任保险", "油污损害"] },
@@ -73,6 +73,16 @@ export const KB = {
     { text: "International oil pollution prevention certificate", code: "1205" },
     { text: "IOPP", code: "1205" },
     { text: "Certificate of Registry", code: "1101" },
+  ],
+  // LR(劳氏)表单号 → 证书类型。扫描件 OCR 常把标题识别得残缺, 但页脚/正文的表单号(如
+  // "Form 2221 (2026.03)")非常稳定, 是判定类型的强信号。仅在 唯一短语 未命中时按表单号兜底,
+  // 早于泛化关键词(避免"Exemption Certificate has not been issued"之类的误命中)。
+  form_codes: [
+    { form: "2220", code: "1210" }, // 液化气体适装证书(Certificate of Fitness)
+    { form: "2221", code: "2205" }, // 货船构造安全证书(Cargo Ship Safety Construction)
+    { form: "2222", code: "1205" }, // 防止油污证书(IOPP)
+    { form: "2226", code: "2222" }, // 国际船舶保安证书(ISSC)
+    { form: "1478", code: "1205" }, // 防止油污证书 Form A / 构造与设备记录
   ],
 };
 
