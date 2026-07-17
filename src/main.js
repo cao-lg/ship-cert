@@ -4,11 +4,6 @@ import JSZip from "jszip";
 import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
 import { CERT_ORDER, certOrderKey } from "./kb.js";
-import { APP_VERSION, APP_BUILD_DATE } from "./build-info.js";
-
-// 将构建信息写入页脚(不再用 vite define, 避免全局替换导致 esbuild 模块初始化顺序异常)
-$("appVersion").textContent = APP_VERSION;
-$("appBuildDate").textContent = APP_BUILD_DATE;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 const STD_FONTS = `${import.meta.env.BASE_URL || "/"}pdfjs-standard-fonts/`;
@@ -270,3 +265,7 @@ clearBtn.onclick = () => { files = []; renderFiles(); resultsEl.hidden = true; l
 downloadZipBtn.onclick = downloadZip;
 
 renderFiles();
+
+// 构建信息(写在文件末尾确保在所有变量定义之后, 避免 esbuild 重排导致 TDZ)
+$("appVersion").textContent = "1.3.0";
+$("appBuildDate").textContent = "2026-07-18 00:43:00";

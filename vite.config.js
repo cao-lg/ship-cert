@@ -6,5 +6,6 @@ export default defineConfig({
   build: {
     target: "es2020",
     chunkSizeWarningLimit: 4000,
+    emptyOutDir: false,
   },
 });
