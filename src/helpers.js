@@ -48,6 +48,13 @@ export function normToken(tok) {
   return t;
 }
 
+// 空格无关归一化: 转小写并去掉所有空白。
+// 用途: OCR 常把"有效 日期"拆成带空格的词, 而知识库短语无空格,
+//       直接 includes 必失配。统一去空格后再比较即可兼容中英文短语。
+export function normSp(s) {
+  return String(s).toLowerCase().replace(/\s+/g, "");
+}
+
 export function toIso(text) {
   text = (text || "").trim();
   let m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -83,9 +90,9 @@ export function matchDateToken(norm) {
 // 船级社
 const SOCIETY_MAP = KB.societies.flatMap((s) => s.keywords.map((kw) => [kw, s.code]));
 export function detectSociety(text) {
-  const low = text.toLowerCase();
+  const n = normSp(text);
   for (const [kw, code] of SOCIETY_MAP) {
-    if (low.includes(kw.toLowerCase())) return code;
+    if (n.includes(normSp(kw))) return code;
   }
   return "";
 }
@@ -102,19 +109,14 @@ export const ISSUE_PHRASES = [...KB.phrases.issue_priority, ...KB.phrases.issue_
 export const NUMBER_PHRASES = KB.phrases.number;
 
 export function detectType(fullRaw) {
-  const fullUpper = fullRaw.toUpperCase();
-  // 1) 唯一短语(大小写不敏感)
+  const n = normSp(fullRaw);
+  // 1) 唯一短语(空格无关)
   for (const [kw, name] of UNIQUE_TITLES) {
-    if (fullRaw.toLowerCase().includes(kw.toLowerCase())) return name;
+    if (n.includes(normSp(kw))) return name;
   }
-  // 2) 全文关键词(英文转 upper; 中文直接匹配)
+  // 2) 全文关键词(空格无关, 中英统一)
   for (const [kw, name] of TYPE_MAP) {
-    const ascii = /^[\x00-\x7F]+$/.test(kw);
-    if (ascii) {
-      if (fullUpper.includes(kw.toUpperCase())) return name;
-    } else if (fullRaw.includes(kw)) {
-      return name;
-    }
+    if (n.includes(normSp(kw))) return name;
   }
   return "";
 }
@@ -142,9 +144,10 @@ export function extractAllDates(text) {
 export function firstDateAfter(text, phrases) {
   const dates = extractAllDates(text);
   if (!dates.length) return "";
-  const low = text.toLowerCase();
+  const n = normSp(text);
   for (const ph of phrases) {
-    let idx = low.indexOf(ph.toLowerCase());
+    const nph = normSp(ph);
+    let idx = n.indexOf(nph);
     while (idx >= 0) {
       let best = null, bestDist = Infinity;
       for (const d of dates) {
@@ -152,7 +155,7 @@ export function firstDateAfter(text, phrases) {
         if (dist >= 0 && dist < bestDist) { bestDist = dist; best = d.iso; }
       }
       if (best) return best;
-      idx = low.indexOf(ph.toLowerCase(), idx + 1);
+      idx = n.indexOf(nph, idx + 1);
     }
   }
   return "";
@@ -168,8 +171,9 @@ export function escapeRegExp(s) {
 export function extractNumber(text) {
   const t = String(text);
   const lines = t.split(/\r?\n/);
+  // \s* 兼容 OCR 去空格后的"certificateno:..."(无空格)与正常"Certificate No: ..."
   // 第 1 遍: Certificate No(全文, 取含数字且非 Form 的编号)
-  const certRe = /certificate\s+no\.?\s*[:：]?\s*(\S+)/gi;
+  const certRe = /certificate\s*no\.?\s*[:：]?\s*(\S+)/gi;
   let m;
   while ((m = certRe.exec(t))) {
     const tok = m[1].replace(/[;:]$/, "");
@@ -177,7 +181,7 @@ export function extractNumber(text) {
   }
   // 第 2 遍: Distinctive Number or Letters(吨位证标识)
   for (const line of lines) {
-    const dm = line.match(/distinctive\s+number\s+or\s+letters\s*[:：]?\s*(\S+)/i);
+    const dm = line.match(/distinctive\s*number\s*or\s*letters\s*[:：]?\s*(\S+)/i);
     if (dm) return dm[1].replace(/[;:]$/, "");
   }
   // 第 3 遍: 中文 编号

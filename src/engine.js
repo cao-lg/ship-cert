@@ -4,7 +4,7 @@ import * as pdfjsDefault from "pdfjs-dist";
 import { PDFDocument, rgb } from "pdf-lib";
 import { KB, ANNUAL_COLORS, RED, RED_FILL } from "./kb.js";
 import {
-  MONTHS, isMonth, normToken, toIso, detectType, detectSociety,
+  MONTHS, isMonth, normToken, normSp, toIso, detectType, detectSociety,
   extractNumber, firstDateAfter, EXPIRY_PHRASES, ISSUE_PHRASES,
   UNIQUE_TITLES, TITLE_HEADS,
 } from "./helpers.js";
@@ -18,10 +18,12 @@ export function configurePdfjs(lib) { PDFJS = lib; }
 // 把 OCR 出的词(含坐标)转成与 getTextContent 同构的 items, 喂回同一套画框流水线。
 // OCR 引擎运行时从 CDN 动态加载(+/esm 已内联全部依赖), 不进构建产物;
 // 加载失败(离线等)则静默降级为"仅文字层", 不影响其他 PDF 处理。
-const OCR_SCALE = 3;            // 渲染分辨率倍数(越高OCR越准, 越大越慢)
+const OCR_SCALE = 4;            // 渲染分辨率倍数(越高OCR越准, 越大越慢) — 由 3 提到 4 提升精度
 const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
 const OCR_SPARSE_ITEMS = 5;     // 单页文字 token 少于此值视为扫描页, 触发 OCR
 const TESSERACT_ESM = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/+esm";
+// 去掉所有空白(不转小写, 保留大小写供标题识别) — OCR 中文常拆成"有效 日期", 必须并拢
+const stripWs = (s) => String(s).replace(/\s+/g, "");
 let _tesseractMod = null;
 async function loadTesseract() {
   if (_tesseractMod) return _tesseractMod;
@@ -32,13 +34,15 @@ async function loadTesseract() {
 
 // 把 tesseract 返回的 words(画布像素坐标)转成与 getTextContent 同构的 device-coord items。
 // bbox 来自图像左上角; 除以 OCR_SCALE 得到与 pdf.js 文字层一致的设备坐标(原点左上, y 向下)。
+// 关键: 每个词的文本先去空格(如"2026 - 09 - 18" → "2026-09-18", "有效 日期"两词拼接在行里再去空格),
+//       这样日期解析与中文短语匹配都能命中。
 export function ocrWordsToItems(words, scale) {
   const items = [];
   for (const w of words || []) {
     const b = w.bbox;
     if (!b || !w.text) continue;
     items.push({
-      str: w.text,
+      str: stripWs(w.text),
       x0: b.x0 / scale,
       y: b.y1 / scale,                 // 以词框底边近似基线(与 getTextContent transform[5] 同语义)
       width: (b.x1 - b.x0) / scale,
@@ -48,7 +52,7 @@ export function ocrWordsToItems(words, scale) {
   return items;
 }
 
-// 浏览器端: 用 pdf.js 把页面渲染到 canvas, 再 tesseract 识别, 返回 device-coord items
+// 浏览器端: 用 pdf.js 把页面渲染到 canvas, 灰度预处理后 tesseract 识别, 返回 device-coord items
 async function ocrPageItems(page, lang, onWarn) {
   if (typeof document === "undefined") return []; // Node 环境无 canvas, 跳过
   let Tesseract;
@@ -65,8 +69,18 @@ async function ocrPageItems(page, lang, onWarn) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return [];
   await page.render({ canvasContext: ctx, viewport }).promise;
+  // 灰度预处理: 去色降噪, 提升 tesseract 准确率(不阈值化, 避免彩色证书丢内容)
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+    d[i] = d[i + 1] = d[i + 2] = g;
+  }
+  ctx.putImageData(img, 0, 0);
   const { data } = await Tesseract.recognize(canvas, lang, {
     logger: (m) => { if (m.status === "recognizing text" && onWarn) onWarn(`  OCR识别中 ${Math.round(m.progress * 100)}%`); },
+    tessedit_pageseg_mode: 6,        // 假定为整齐的文本块(证书版式), 比默认 PSM 3 更稳
+    preserve_interword_spaces: 0,   // 不保留词间空格, 配合下方行级去空格归一化
   });
   return ocrWordsToItems(data.words, OCR_SCALE);
 }
@@ -193,8 +207,8 @@ export function computeBoxes(pages, annualColor) {
   const boxes = [];
   for (const p of pages) {
     p.lines.forEach((line, li) => {
-      const lower = line.text.toLowerCase();
-      const isExpiry = EXPIRY_PHRASES.some((ph) => lower.includes(ph.toLowerCase()));
+      const n = normSp(line.text); // 空格无关: 兼容 OCR 把"有效 日期"拆词的情况
+      const isExpiry = EXPIRY_PHRASES.some((ph) => n.includes(normSp(ph)));
       if (isExpiry) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
@@ -203,9 +217,9 @@ export function computeBoxes(pages, annualColor) {
         }
         return;
       }
-      const hasKind = lower.includes("annual") || lower.includes("intermediate") ||
-        lower.includes("年度") || lower.includes("期间") || lower.includes("中间");
-      const hasSurvey = lower.includes("survey") || lower.includes("检验");
+      const hasKind = n.includes("annual") || n.includes("intermediate") ||
+        n.includes("年度") || n.includes("期间") || n.includes("中间");
+      const hasSurvey = n.includes("survey") || n.includes("检验");
       if (hasKind && hasSurvey) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
@@ -237,12 +251,13 @@ function nearestDate(page, li, yPhrase, used, keyOf) {
 
 // ---------------------------------------------------------------- 分组
 function hasUnique(p) {
-  return UNIQUE_TITLES.some(([kw]) => p.plainText.toLowerCase().includes(kw.toLowerCase()));
+  const n = normSp(p.plainText);
+  return UNIQUE_TITLES.some(([kw]) => n.includes(normSp(kw)));
 }
 function hasExpiryNonAnnual(p) {
   return p.lines.some((l) => {
-    const low = l.text.toLowerCase();
-    return EXPIRY_PHRASES.some((ph) => low.includes(ph.toLowerCase())) && !/annual|survey/i.test(l.text);
+    const n = normSp(l.text);
+    return EXPIRY_PHRASES.some((ph) => n.includes(normSp(ph))) && !/annual|survey/.test(n);
   });
 }
 function isCertStart(p) {
@@ -320,8 +335,8 @@ function buildRecord(group, pages, fileName) {
   if (!issue || !expiry) {
     for (const p of pg) {
       for (const l of p.lines) {
-        const low = l.text.toLowerCase();
-        if (!issue && ISSUE_PHRASES.some((ph) => low.includes(ph.toLowerCase()))) {
+        const n = normSp(l.text); // 空格无关匹配(OCR 拆词保护)
+        if (!issue && ISSUE_PHRASES.some((ph) => n.includes(normSp(ph)))) {
           let dgs = findDateGroups(l.items);
           if (dgs.length) { issue = dgs[0].iso; }
           if (!issue) { // 同页后续行窗口
@@ -332,7 +347,7 @@ function buildRecord(group, pages, fileName) {
             }
           }
         }
-        if (!expiry && EXPIRY_PHRASES.some((ph) => low.includes(ph.toLowerCase()))) {
+        if (!expiry && EXPIRY_PHRASES.some((ph) => n.includes(normSp(ph)))) {
           let dgs = findDateGroups(l.items);
           if (dgs.length) { expiry = dgs[0].iso; }
           if (!expiry) {
@@ -349,13 +364,13 @@ function buildRecord(group, pages, fileName) {
     }
   }
 
-  // --- 年检日期: 保持原逐行扫描逻辑不变 ---
+  // --- 年检日期: 保持原逐行扫描逻辑不变(空格无关匹配) ---
   const annualDates = [];
   for (const p of pg) {
     for (const l of p.lines) {
-      const low = l.text.toLowerCase();
-      const hasKind = low.includes("annual") || low.includes("intermediate") || low.includes("年度") || low.includes("期间") || low.includes("中间");
-      const hasSurvey = low.includes("survey") || low.includes("检验");
+      const n = normSp(l.text);
+      const hasKind = n.includes("annual") || n.includes("intermediate") || n.includes("年度") || n.includes("期间") || n.includes("中间");
+      const hasSurvey = n.includes("survey") || n.includes("检验");
       if (hasKind && hasSurvey) {
         for (const g of findDateGroups(l.items)) annualDates.push(g.iso);
       }
@@ -417,8 +432,15 @@ export async function processPdf(bytes, opts = {}) {
     }
 
     const { lines, plainText } = buildLines(items);
+    // OCR 页: 行文本去空格(保留大小写, 供标题识别), 并重建 plainText,
+    // 使分组/类型/编号/日期抽取与画框逻辑一致命中"有效日期"等被拆词的中文标签。
+    let pt = plainText;
+    if (ocrUsed) {
+      for (const l of lines) l.text = stripWs(l.text);
+      pt = lines.map((l) => l.text).join("\n");
+    }
     const topHeading = detectTopHeading(lines, vp.height);
-    pages.push({ pno, items, lines, plainText, topHeading, libPage, SCALE, pageHeight, ocrUsed });
+    pages.push({ pno, items, lines, plainText: pt, topHeading, libPage, SCALE, pageHeight, ocrUsed });
   }
   await pdfjsDoc.destroy();
 
