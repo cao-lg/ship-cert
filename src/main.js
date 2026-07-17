@@ -19,6 +19,7 @@ const fileListEl = $("fileList");
 const fileCountEl = $("fileCount");
 const annualColorSel = $("annualColor");
 const mergePdfChk = $("mergePdf");
+const ocrChk = $("ocrToggle");
 const runBtn = $("runBtn");
 const clearBtn = $("clearBtn");
 const logWrap = $("logWrap");
@@ -117,6 +118,9 @@ async function run() {
         annualColor,
         fileName: fname,
         standardFontDataUrl: STD_FONTS,
+        ocr: ocrChk.checked,
+        ocrLang: "eng+chi_sim",
+        onWarn: (m) => log(`  ${m}`),
       });
       grandRed += red;
       grandBlue += blue;
@@ -126,7 +130,8 @@ async function run() {
 
       // 诊断日志
       let diag = "";
-      if (textStats.isLikelyScanned) diag = ` ⚠️ 可能是扫描版PDF(文字极少,${textStats.totalItems}个文本元素)`;
+      if (textStats.usedOcr) diag = ` 🔍 OCR识别了 ${textStats.ocrPages}/${textStats.numPages} 页`;
+      else if (textStats.isLikelyScanned) diag = ` ⚠️ 可能是扫描版PDF(文字极少,${textStats.totalItems}个文本元素) — 勾选"OCR识别"可启用双保险`;
       else if (red === 0 && blue === 0 && textStats.totalLines > 3) diag = ` ⚠️ 有文字(${textStats.totalLines}行)但未匹配到日期短语,可能是非常规格式`;
 
       log(`  标注完成: 红框=${red}  年检框=${blue}  证书=${records.length}  页数=${textStats.numPages}${diag}`);

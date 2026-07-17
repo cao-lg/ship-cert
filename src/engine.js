@@ -13,6 +13,64 @@ import {
 let PDFJS = pdfjsDefault;
 export function configurePdfjs(lib) { PDFJS = lib; }
 
+// ---------------------------------------------------------------- OCR 双保险
+// 文字层稀疏的页面(扫描版PDF)用 pdf.js 渲染成图 + tesseract.js(OCR)识别,
+// 把 OCR 出的词(含坐标)转成与 getTextContent 同构的 items, 喂回同一套画框流水线。
+// OCR 引擎运行时从 CDN 动态加载(+/esm 已内联全部依赖), 不进构建产物;
+// 加载失败(离线等)则静默降级为"仅文字层", 不影响其他 PDF 处理。
+const OCR_SCALE = 3;            // 渲染分辨率倍数(越高OCR越准, 越大越慢)
+const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
+const OCR_SPARSE_ITEMS = 5;     // 单页文字 token 少于此值视为扫描页, 触发 OCR
+const TESSERACT_ESM = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/+esm";
+let _tesseractMod = null;
+async function loadTesseract() {
+  if (_tesseractMod) return _tesseractMod;
+  const mod = await import(/* @vite-ignore */ TESSERACT_ESM);
+  _tesseractMod = mod.default || mod;
+  return _tesseractMod;
+}
+
+// 把 tesseract 返回的 words(画布像素坐标)转成与 getTextContent 同构的 device-coord items。
+// bbox 来自图像左上角; 除以 OCR_SCALE 得到与 pdf.js 文字层一致的设备坐标(原点左上, y 向下)。
+export function ocrWordsToItems(words, scale) {
+  const items = [];
+  for (const w of words || []) {
+    const b = w.bbox;
+    if (!b || !w.text) continue;
+    items.push({
+      str: w.text,
+      x0: b.x0 / scale,
+      y: b.y1 / scale,                 // 以词框底边近似基线(与 getTextContent transform[5] 同语义)
+      width: (b.x1 - b.x0) / scale,
+      height: (b.y1 - b.y0) / scale,
+    });
+  }
+  return items;
+}
+
+// 浏览器端: 用 pdf.js 把页面渲染到 canvas, 再 tesseract 识别, 返回 device-coord items
+async function ocrPageItems(page, lang, onWarn) {
+  if (typeof document === "undefined") return []; // Node 环境无 canvas, 跳过
+  let Tesseract;
+  try {
+    Tesseract = await loadTesseract();
+  } catch (e) {
+    if (onWarn) onWarn(`  ⚠️ OCR引擎加载失败(需联网首次加载): ${e.message}`);
+    return [];
+  }
+  const viewport = page.getViewport({ scale: OCR_SCALE });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return [];
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const { data } = await Tesseract.recognize(canvas, lang, {
+    logger: (m) => { if (m.status === "recognizing text" && onWarn) onWarn(`  OCR识别中 ${Math.round(m.progress * 100)}%`); },
+  });
+  return ocrWordsToItems(data.words, OCR_SCALE);
+}
+
 const MONTH_ALT = Object.keys(MONTHS).join("|");
 
 // ---------------------------------------------------------------- 页面解析
@@ -346,9 +404,21 @@ export async function processPdf(bytes, opts = {}) {
         height: it.height,
       }))
       .filter((it) => it.str && it.str.trim().length);
+
+    // 双保险: 文字层稀疏(扫描版PDF)时, 用 OCR 补充识别该页
+    let ocrUsed = false;
+    if (opts.ocr && typeof document !== "undefined" && items.length < OCR_SPARSE_ITEMS) {
+      try {
+        const ocrItems = await ocrPageItems(page, opts.ocrLang || OCR_LANG, opts.onWarn);
+        if (ocrItems.length > items.length) { items.length = 0; items.push(...ocrItems); ocrUsed = true; }
+      } catch (e) {
+        if (opts.onWarn) opts.onWarn(`  ⚠️ OCR 失败: ${e.message}`);
+      }
+    }
+
     const { lines, plainText } = buildLines(items);
     const topHeading = detectTopHeading(lines, vp.height);
-    pages.push({ pno, items, lines, plainText, topHeading, libPage, SCALE, pageHeight });
+    pages.push({ pno, items, lines, plainText, topHeading, libPage, SCALE, pageHeight, ocrUsed });
   }
   await pdfjsDoc.destroy();
 
@@ -371,7 +441,15 @@ export async function processPdf(bytes, opts = {}) {
   // 诊断信息: 文本提取统计(帮助判断"扫描版PDF" vs "短语不匹配")
   const totalItems = pages.reduce((s, p) => s + p.items.length, 0);
   const totalLines = pages.reduce((s, p) => s + p.lines.length, 0);
-  const textStats = { numPages: pages.length, totalItems, totalLines, isLikelyScanned: totalItems < 5 };
+  const ocrPages = pages.filter((p) => p.ocrUsed).length;
+  const textStats = {
+    numPages: pages.length,
+    totalItems,
+    totalLines,
+    isLikelyScanned: totalItems < 5,
+    ocrPages,
+    usedOcr: ocrPages > 0,
+  };
 
   return { bytes: outBytes, records, red, blue, textStats };
 }
