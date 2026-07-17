@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 
 // 构建期注入: 更新日期(取构建当天, 按东八区北京时间, 避免深夜构建显示"昨天")与版本号, 供页脚展示。
-const APP_BUILD_DATE = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+const d = new Date(Date.now() + 8 * 3600 * 1000);
+const APP_BUILD_DATE = d.toISOString().slice(0, 19).replace("T", " ");
 const APP_VERSION = "1.3.0";
 
 // 相对 base: 部署到 Cloudflare Pages 任意路径(含自定义子路径)都能正常加载资源
