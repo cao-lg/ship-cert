@@ -237,20 +237,61 @@ function finalizeGroups(groups, pages) {
     return { ...g, type: type || `证书(${g.code})`, code: type || `证书(${g.code})` };
   });
 }
-function groupCertificates(pages) {
+export function groupCertificates(pages) {
   const dnv = dnvGroup(pages);
   if (!(dnv.length === 1 && dnv[0].code === "FULL")) return finalizeGroups(dnv, pages);
   return finalizeGroups(titleGroup(pages), pages);
 }
 
 // ---------------------------------------------------------------- 记录
+// 从分组页面的文本中抽取一条证书记录。
+// 策略: 日期提取以 firstDateAfter(全文+短语优先级)为主,
+//       仅当全文方法返回空时, 降级到逐行扫描(与 computeBoxes 画框逻辑对齐)。
+// 返回 { type, no, issue, expiry, annual, remark, _ghost }
 function buildRecord(group, pages, fileName) {
   const pg = group.pageIndices.map((i) => pages[i]);
   const fullRaw = pg.map((p) => p.plainText).join("\n");
   const ctype = group.type || "证书";
   const cno = extractNumber(fullRaw);
-  const issue = firstDateAfter(fullRaw, ISSUE_PHRASES);
-  const expiry = firstDateAfter(fullRaw, EXPIRY_PHRASES);
+
+  // --- 签发日期 / 有效日期: 主=全文 firstDateAfter(有短语优先级), 备选=逐行扫描 ---
+  let issue = firstDateAfter(fullRaw, ISSUE_PHRASES);
+  let expiry = firstDateAfter(fullRaw, EXPIRY_PHRASES);
+
+  // 全文没找到时, 降级到逐行短语→最近日期(与画框逻辑对齐)
+  if (!issue || !expiry) {
+    for (const p of pg) {
+      for (const l of p.lines) {
+        const low = l.text.toLowerCase();
+        if (!issue && ISSUE_PHRASES.some((ph) => low.includes(ph.toLowerCase()))) {
+          let dgs = findDateGroups(l.items);
+          if (dgs.length) { issue = dgs[0].iso; }
+          if (!issue) { // 同页后续行窗口
+            const li = p.lines.indexOf(l);
+            for (let w = 1; w <= Math.min(6, p.lines.length - li - 1); w++) {
+              dgs = findDateGroups(p.lines[li + w].items);
+              if (dgs.length) { issue = dgs[0].iso; break; }
+            }
+          }
+        }
+        if (!expiry && EXPIRY_PHRASES.some((ph) => low.includes(ph.toLowerCase()))) {
+          let dgs = findDateGroups(l.items);
+          if (dgs.length) { expiry = dgs[0].iso; }
+          if (!expiry) {
+            const li = p.lines.indexOf(l);
+            for (let w = 1; w <= Math.min(6, p.lines.length - li - 1); w++) {
+              dgs = findDateGroups(p.lines[li + w].items);
+              if (dgs.length) { expiry = dgs[0].iso; break; }
+            }
+          }
+        }
+        if (issue && expiry) break;
+      }
+      if (issue && expiry) break;
+    }
+  }
+
+  // --- 年检日期: 保持原逐行扫描逻辑不变 ---
   const annualDates = [];
   for (const p of pg) {
     for (const l of p.lines) {
@@ -271,7 +312,11 @@ function buildRecord(group, pages, fileName) {
   if (ctype.includes("保安") && !uniqAnnual.length) parts.push("无年度检验（保安证书按验证周期）");
   if (ctype.includes("吨位") && !uniqAnnual.length) parts.push("国际吨位证书（1969），长期有效，无年度检验");
   if (fileName) parts.push(`来源:${fileName}`);
-  return { type: ctype, no: cno, issue, expiry, annual, remark: parts.join("；") };
+
+  // 判断是否为幽灵记录(无可识别信息)
+  const _ghost = !ctype.includes("-") && !cno && !issue && !expiry && !annual;
+
+  return { type: ctype, no: cno, issue, expiry, annual, remark: parts.join("；"), _ghost };
 }
 
 // ---------------------------------------------------------------- 主流程
@@ -314,7 +359,13 @@ export async function processPdf(bytes, opts = {}) {
   }
 
   const groups = groupCertificates(pages);
-  const records = groups.map((g) => buildRecord(g, pages, opts.fileName));
+  let records = groups.map((g) => buildRecord(g, pages, opts.fileName));
+  // 过滤幽灵记录:无可识别类型(无编码前缀"XXXX-")、无编号、无任何日期的空行不写入 Excel
+  const validRecords = records.filter((r) => !r._ghost);
+  if (validRecords.length !== records.length) {
+    // 幽灵组的页内容合并到相邻组(防止丢页), 但不在 Excel 中产生空行
+    records = validRecords;
+  }
   const outBytes = await pdfLibDoc.save();
   return { bytes: outBytes, records, red, blue };
 }
