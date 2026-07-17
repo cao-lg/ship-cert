@@ -18,7 +18,7 @@ export function configurePdfjs(lib) { PDFJS = lib; }
 // 把 OCR 出的词(含坐标)转成与 getTextContent 同构的 items, 喂回同一套画框流水线。
 // OCR 引擎运行时从 CDN 动态加载(+/esm 已内联全部依赖), 不进构建产物;
 // 加载失败(离线等)则静默降级为"仅文字层", 不影响其他 PDF 处理。
-const OCR_SCALE = 4;            // 渲染分辨率倍数(越高OCR越准, 越大越慢) — 由 3 提到 4 提升精度
+const OCR_SCALE = 3;            // 渲染分辨率倍数: 2~3 已足够清晰证书文字; 4 过于细腻且慢约 2 倍
 const OCR_LANG = "eng+chi_sim"; // 中英双语证书: 英文主信号 + 中文标签(如"有效期至")
 const MIN_MEANINGFUL_TOKENS = 12; // 一页若有≥12个"有意义"文字 token, 视为数字版(有可用文字层), 跳过 OCR
 // 有意义 token: 去零宽/控制字符后长度≥2, 且含字母/数字/汉字(排除纯标点、孤立符号、乱码断字)
@@ -57,6 +57,33 @@ async function loadTesseract() {
   return _tesseractMod;
 }
 
+// 持久 OCR worker: 仅创建并初始化一次, 跨页面/跨文件共享; 语言包(wasm + 训练数据)只下载一次。
+// 处理全部完成后由 terminateOcr() 释放。相比原先每页调用一次 Tesseract.recognize() 一次性 API
+// (每次都重建 worker + 重新下载 ~20MB 中文语言包), 这是 OCR"加载慢/识别慢"的根因修复。
+let _ocrWorker = null;
+let _ocrWorkerLang = null;
+export async function ensureOcrWorker(lang, onWarn) {
+  const Tesseract = await loadTesseract();
+  if (_ocrWorker && _ocrWorkerLang === lang) return _ocrWorker;
+  if (_ocrWorker) { try { await _ocrWorker.terminate(); } catch { /* ignore */ } _ocrWorker = null; }
+  if (onWarn) onWarn("  ⏳ OCR引擎初始化中(首次需联网下载语言包, 请稍候)…");
+  _ocrWorker = await Tesseract.createWorker(lang, 1, {
+    logger: (m) => {
+      const pct = m.progress != null ? Math.round(m.progress * 100) : 0;
+      if (m.status === "recognizing text") {
+        if (onWarn) onWarn(`  OCR识别中 ${pct}%`);
+      } else if (onWarn && (m.status === "loading language traineddata" || m.status === "initializing tesseract" || m.status === "loading tesseract core")) {
+        if (pct) onWarn(`  OCR引擎加载中 ${pct}%`);
+      }
+    },
+  });
+  _ocrWorkerLang = lang;
+  return _ocrWorker;
+}
+export function terminateOcr() {
+  if (_ocrWorker) { try { _ocrWorker.terminate(); } catch { /* ignore */ } _ocrWorker = null; _ocrWorkerLang = null; }
+}
+
 // 把 tesseract 返回的 words(画布像素坐标)转成与 getTextContent 同构的 device-coord items。
 // bbox 来自图像左上角; 除以 OCR_SCALE 得到与 pdf.js 文字层一致的设备坐标(原点左上, y 向下)。
 // 关键: 每个词的文本先去空格(如"2026 - 09 - 18" → "2026-09-18", "有效 日期"两词拼接在行里再去空格),
@@ -77,12 +104,12 @@ export function ocrWordsToItems(words, scale) {
   return items;
 }
 
-// 浏览器端: 用 pdf.js 把页面渲染到 canvas, 灰度预处理后 tesseract 识别, 返回 device-coord items
+// 浏览器端: 用 pdf.js 把页面渲染到 canvas, 灰度预处理后复用持久 worker 识别, 返回 device-coord items
 async function ocrPageItems(page, lang, onWarn) {
   if (typeof document === "undefined") return []; // Node 环境无 canvas, 跳过
-  let Tesseract;
+  let worker;
   try {
-    Tesseract = await loadTesseract();
+    worker = await ensureOcrWorker(lang, onWarn);
   } catch (e) {
     if (onWarn) onWarn(`  ⚠️ OCR引擎加载失败(需联网首次加载): ${e.message}`);
     return [];
@@ -102,11 +129,16 @@ async function ocrPageItems(page, lang, onWarn) {
     d[i] = d[i + 1] = d[i + 2] = g;
   }
   ctx.putImageData(img, 0, 0);
-  const { data } = await Tesseract.recognize(canvas, lang, {
-    logger: (m) => { if (m.status === "recognizing text" && onWarn) onWarn(`  OCR识别中 ${Math.round(m.progress * 100)}%`); },
-    tessedit_pageseg_mode: 6,        // 假定为整齐的文本块(证书版式), 比默认 PSM 3 更稳
-    preserve_interword_spaces: 0,   // 不保留词间空格, 配合下方行级去空格归一化
-  });
+  let data;
+  try {
+    ({ data } = await worker.recognize(canvas, {
+      tessedit_pageseg_mode: 6,        // 假定为整齐的文本块(证书版式), 比默认 PSM 3 更稳
+      preserve_interword_spaces: 0,   // 不保留词间空格, 配合下方行级去空格归一化
+    }));
+  } catch (e) {
+    if (onWarn) onWarn(`  ⚠️ OCR识别失败: ${e.message}`);
+    return [];
+  }
   return ocrWordsToItems(data.words, OCR_SCALE);
 }
 

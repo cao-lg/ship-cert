@@ -1,7 +1,7 @@
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import JSZip from "jszip";
-import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
+import { processPdf, configurePdfjs, mergePdfs, ensureOcrWorker, terminateOcr } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
 import { CERT_ORDER, certOrderKey } from "./kb.js";
 
@@ -21,6 +21,7 @@ const fileCountEl = $("fileCount");
 const annualColorSel = $("annualColor");
 const mergePdfChk = $("mergePdf");
 const ocrChk = $("ocrToggle");
+const ocrStatusEl = $("ocrStatus");
 const runBtn = $("runBtn");
 const clearBtn = $("clearBtn");
 const logWrap = $("logWrap");
@@ -148,6 +149,9 @@ async function run() {
     }
   }
 
+  // OCR 引擎已用完, 释放持久 worker(回收 ~20MB 语言包内存)
+  terminateOcr();
+
   // 按证书类型指定顺序排序(国籍→最低配员→载重线→安全构造→保安→防油污→吨位→其它),
   // 多证合一的 PDF 以其"主证书类型"(记录中最小排序键)定位, IOPP 与 IOPP Form A 同属 1205 自然相邻。
   const keyOf = (e) => {
@@ -264,8 +268,27 @@ runBtn.onclick = run;
 clearBtn.onclick = () => { files = []; renderFiles(); resultsEl.hidden = true; logWrap.hidden = true; };
 downloadZipBtn.onclick = downloadZip;
 
+// OCR 引擎预加载: 勾选时在后台提前下载语言包, 避免处理时卡在某页长时间等待
+async function preloadOcr() {
+  if (!ocrChk.checked) {
+    terminateOcr();
+    if (ocrStatusEl) ocrStatusEl.textContent = "";
+    return;
+  }
+  if (ocrStatusEl) ocrStatusEl.textContent = "OCR引擎加载中…";
+  try {
+    await ensureOcrWorker("eng+chi_sim", (m) => { if (ocrStatusEl && /%/.test(m)) ocrStatusEl.textContent = m.trim(); });
+    if (ocrStatusEl) ocrStatusEl.textContent = "✓ OCR引擎已就绪";
+  } catch (e) {
+    if (ocrStatusEl) ocrStatusEl.textContent = "⚠️ OCR引擎加载失败（离线时扫描件将跳过OCR）";
+  }
+}
+ocrChk.addEventListener("change", preloadOcr);
+
 renderFiles();
+// 默认勾选 OCR: 页面加载即在后台预加载引擎(下载语言包), 处理时直接复用、无需等待
+preloadOcr();
 
 // 构建信息(写在文件末尾确保在所有变量定义之后, 避免 esbuild 重排导致 TDZ)
-$("appVersion").textContent = "1.3.0";
-$("appBuildDate").textContent = "2026-07-18 00:43:00";
+$("appVersion").textContent = "1.3.1";
+$("appBuildDate").textContent = "2026-07-18 07:20:00";

@@ -65,6 +65,8 @@ main { margin-top: 22px; display: flex; flex-direction: column; gap: 18px; }
 .merge-opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; padding: 4px 10px; border-radius: 8px; border: 1px dashed var(--line); background: rgba(0,0,0,0.02); }
 .merge-opt:hover { border-color: var(--brand); background: rgba(0,0,0,0.04); }
 .merge-opt input[type="checkbox"] { cursor: pointer; accent-color: var(--brand); width: 15px; height: 15px; }
+.ocr-status { font-size: 12px; color: var(--muted); align-self: center; min-width: 1px; }
+.ocr-status:empty { display: none; }
 select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); font-size: 14px; }
 button { font-family: inherit; }
 .primary { background: var(--brand); color: #fff; border: none; border-radius: 10px; padding: 10px 18px; font-size: 15px; cursor: pointer; }

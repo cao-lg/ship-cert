@@ -58,6 +58,7 @@
         <label class="merge-opt" title="自动判断: 数字版PDF直接用pdf.js文字层(快); 只有文字层稀疏/扫描件才用 tesseract.js 识别。不勾则完全不做OCR(扫描件将无法识别日期)">
           <input type="checkbox" id="ocrToggle" checked /> OCR识别（自动·仅扫描/无文字层页）
         </label>
+        <span id="ocrStatus" class="ocr-status"></span>
         <button type="button" id="runBtn" class="primary" disabled>开始处理</button>
         <button type="button" id="clearBtn" class="ghost" disabled>清空</button>
       </section>
@@ -90,6 +91,11 @@
       <p class="copyright">© 2026 广东科学技术职业学院 商学院 数据分析技能大师工作室。本工具当前<strong>免费提供使用</strong>，可用于个人与企业内部的船舶证书整理；未经授权不得用于商业转售或包装为收费服务。识别结果仅供参考，请以证书原件为准。</p>
       <details class="changelog">
         <summary>更新日志</summary>
+        <div class="cl-entry"><strong>v1.3.1</strong> (2026-07-18)</div>
+        <ul class="cl-list">
+          <li>优化: OCR 引擎改为持久 worker(跨页面/文件复用, 语言包仅下载一次) + 勾选时后台预加载, 大幅缩短加载与识别等待</li>
+          <li>优化: 渲染分辨率 4→3, OCR 识别速度约提升 2 倍(清晰证书文字精度基本无影响)</li>
+        </ul>
         <div class="cl-entry"><strong>v1.3.0</strong> (2026-07-18)</div>
         <ul class="cl-list">
           <li>新增: 页脚版权归属、更新日期(精确到秒)、更新日志</li>
