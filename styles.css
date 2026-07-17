@@ -90,3 +90,8 @@ footer { margin-top: 26px; text-align: center; color: var(--muted); font-size: 1
 footer .ver { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
 footer .copyright { margin-top: 6px; opacity: 0.85; }
 footer .copyright strong { color: var(--ok); }
+footer .changelog { margin-top: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; text-align: left; font-size: 12px; }
+footer .changelog summary { cursor: pointer; font-weight: 600; color: var(--ink); }
+footer .changelog .cl-entry { margin: 6px 0 2px; color: var(--ink); }
+footer .changelog .cl-list { margin: 0; padding-left: 18px; list-style: none; }
+footer .changelog .cl-list li::before { content: "• "; color: var(--muted); }

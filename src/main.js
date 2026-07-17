@@ -4,11 +4,11 @@ import JSZip from "jszip";
 import { processPdf, configurePdfjs, mergePdfs } from "./engine.js";
 import { buildExcelWorkbook } from "./excel.js";
 import { CERT_ORDER, certOrderKey } from "./kb.js";
+import { APP_VERSION, APP_BUILD_DATE } from "./build-info.js";
 
-// 构建期注入(见 vite.config.js define): 版本号与更新日期, 写入页脚
-/* global __APP_VERSION__, __APP_BUILD_DATE__ */
-$("appVersion").textContent = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "—";
-$("appBuildDate").textContent = typeof __APP_BUILD_DATE__ !== "undefined" ? __APP_BUILD_DATE__ : "—";
+// 将构建信息写入页脚(不再用 vite define, 避免全局替换导致 esbuild 模块初始化顺序异常)
+$("appVersion").textContent = APP_VERSION;
+$("appBuildDate").textContent = APP_BUILD_DATE;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 const STD_FONTS = `${import.meta.env.BASE_URL || "/"}pdfjs-standard-fonts/`;

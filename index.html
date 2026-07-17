@@ -88,6 +88,30 @@
       <p class="ver">版本 <span id="appVersion">—</span> · 更新于 <span id="appBuildDate">—</span></p>
       <p>本工具所有计算均在你的浏览器本地完成，PDF 与证书信息不会离开本机；扫描件 OCR 亦在本地完成，不上传任何图片。</p>
       <p class="copyright">© 2026 广东科学技术职业学院 商学院 数据分析技能大师工作室。本工具当前<strong>免费提供使用</strong>，可用于个人与企业内部的船舶证书整理；未经授权不得用于商业转售或包装为收费服务。识别结果仅供参考，请以证书原件为准。</p>
+      <details class="changelog">
+        <summary>更新日志</summary>
+        <div class="cl-entry"><strong>v1.3.0</strong> (2026-07-18)</div>
+        <ul class="cl-list">
+          <li>新增: 页脚版权归属、更新日期(精确到秒)、更新日志</li>
+          <li>修复: 汇总表同一证书重复行(去重合并保留字段最完整)</li>
+          <li>修复: 船级社短代码词边界(RS 不再误命中 years)</li>
+          <li>修复: 幽灵行过滤(无编号无日期视为空行不输出)</li>
+          <li>新增: LR 表单号识别(扫描件标题残缺时兜底)</li>
+          <li>新增: OCR 自动判断(数字版快速仅扫描件走 OCR)</li>
+          <li>新增: 按证书类型指定顺序合并(REG→MM→LL→SC→ISSC→IOPP→TON)</li>
+          <li>修复: 编号提取在 OCR 扫描件中的粘连/吞整页问题</li>
+          <li>修复: 特殊字符处理(零宽/全角/连字符/形近字母)</li>
+        </ul>
+        <div class="cl-entry"><strong>v1.2.0</strong> (2026-07-16)</div>
+        <ul class="cl-list">
+          <li>新增: OCR 双保险(扫描版 PDF 自动触发识别)</li>
+          <li>新增: 加密 PDF 支持</li>
+          <li>新增: 合并为一个 PDF 功能</li>
+          <li>新增: Excel 汇总模板(沿用指定模板)</li>
+          <li>修复: 中文证书标题识别</li>
+          <li>修复: 多 PDF 合并顺序</li>
+        </ul>
+      </details>
     </footer>
   </div>
   <script type="module" src="./src/main.js"></script>
