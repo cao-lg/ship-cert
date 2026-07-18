@@ -273,7 +273,7 @@ function deviceToUser(vp, dx, dy) {
 // 独立内容流默认单位 CTM, 矩形按用户空间绝对坐标绘制, 与源内容流任何 CTM 无关。
 function addBoxAsRect(libPage, g, stroke, fill) {
   ensureAnnotStream(libPage);
-  const pad = 3; // 用户点
+  const pad = 12; // 放大 4 倍(原 pad=3), 让框更大更醒目
   // 日期组四角(用户空间, y 向上): 左/右取 x 极值, 上/下取 y 极值(已含 fontSize)。
   const left = g.x0Dev - pad, right = g.x1Dev + pad;
   const bottom = Math.min(g.yTopDev, g.yBotDev) - pad; // y 向上: 较小 y = 下边
@@ -289,7 +289,7 @@ function addBoxAsRect(libPage, g, stroke, fill) {
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
     borderWidth: 2.5,
     color: rgb(fill[0], fill[1], fill[2]),
-    opacity: 0.09, // 极淡半透明填充, 不遮挡日期文字(之前 0.22 太浓会盖字)
+    opacity: 0, // 完全透明填充, 仅保留彩色边框(不遮挡任何文字)
   });
   return { x, y, w, h };
 }
