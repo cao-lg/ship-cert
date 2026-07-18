@@ -7,3 +7,6 @@ dist
 *-web-标注.pdf
 *-web.xlsx
 标注-*.xlsx
+
+# vite temp build files
+vite.config.js.timestamp-*.mjs

@@ -1,7 +1,8 @@
 // 船舶证书 PDF 标注与信息提取引擎(纯前端)。
 // 逻辑对齐 Python 版 cert_tool.py: pdf.js 取文字与坐标, pdf-lib 画红/绿框并保存。
 import * as pdfjsDefault from "pdfjs-dist";
-import { PDFDocument, rgb } from "pdf-lib";
+import { PDFDocument, PDFArray, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
+import Pako from "pako";
 import { KB, ANNUAL_COLORS, RED, RED_FILL } from "./kb.js";
 import {
   MONTHS, isMonth, normToken, normSp, toIso, detectType, detectSociety,
@@ -232,8 +233,8 @@ export function findDateGroups(items) {
 }
 
 // 将 device-coord 日期组归一化到 [0,1] 范围(基于 pdf.js viewport 尺寸)。
-// 归一化后不再依赖 SCALE, drawGroup 只需乘以 libPage 实际尺寸即可正确定位,
-// 彻底消除"pdf.js viewport(cropBox+rotation) vs pdf-lib page(mediaBox)"尺寸不一致导致的偏移。
+// 归一化后不再依赖 SCALE; 画框改用 PDF /Square 注释(页面用户坐标系, 不受内容流 CTM 影响),
+// 彻底消除"源证书整页缩放/平移/旋转"以及"pdf.js viewport vs pdf-lib page 尺寸差异"导致的偏移。
 function normalizeGroup(g, vpW, vpH) {
   return {
     x0: g.x0Dev / vpW,
@@ -244,26 +245,109 @@ function normalizeGroup(g, vpW, vpH) {
   };
 }
 
-// 用归一化坐标画框: (x0,x1,yTop,yBot 均为 0~1), 乘以 libPage 实际尺寸即得 PDF 绘制坐标。
-// PDF 坐标系原点在左下角, Y 向上 → y 需翻转: normY → pageHeight * (1 - normY)
-function drawGroup(libPage, g, stroke, fill) {
+// ---------------------------------------------------------------- 内容流画框(CTM 抵消)
+// 用内容流矩形(drawRectangle)在页面【用户坐标系】画框。
+// 关键问题: 很多源证书 PDF 的页面内容流末尾 CTM 不是单位矩阵(常见 [1,0,0,-1,0,H] 整页 Y 翻转,
+// 或加载缩放/平移), 直接在末尾追加矩形会继承该 CTM, 导致框纵向翻转/偏移 —— 这正是之前"位置不对"的根因。
+// 解决: 读取页面内容流、追踪其执行结束时的"最终 CTM", 在画框时用 q + cm(逆CTM) + Q 包裹,
+// 把绘制坐标系归零回绝对页面坐标系, 框即落在与 pdf.js 文字坐标一致的正确位置。
+// 相比 PDF /Square 原生注释方案: 注释方案在 pdf-lib 对"已加载且原页非空 Annots"的文档上
+// 新增注释对象后 save() 会整体丢弃新注释(pdf-lib 已知缺陷), 而内容流方案无此限制且绘制在最上层(可见)。
+
+// 追踪一段内容流执行结束后的图形 CTM(只关心 cm 与 q/Q; 文本矩阵不影响路径绘制)。
+function finalCTMOf(str) {
+  const t = String(str).replace(/\r/g, " ").split(/\s+/).filter(Boolean);
+  let a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
+  const stack = [];
+  let i = 0;
+  while (i < t.length) {
+    const op = t[i];
+    if (op === "q") { stack.push([a, b, c, d, e, f]); i++; continue; }
+    if (op === "Q") { if (stack.length) [a, b, c, d, e, f] = stack.pop(); i++; continue; }
+    if (op === "cm") {
+      const ma = +t[i - 6], mb = +t[i - 5], mc = +t[i - 4], md = +t[i - 3], me = +t[i - 2], mf = +t[i - 1];
+      if ([ma, mb, mc, md, me, mf].every((v) => Number.isFinite(v))) {
+        // CTM_new = CTM_cur × M
+        const na = a * ma + c * mb, nb = b * ma + d * mb;
+        const nc = a * mc + c * md, nd = b * mc + d * md;
+        const ne = a * me + c * mf + e, nf = b * me + d * mf + f;
+        a = na; b = nb; c = nc; d = nd; e = ne; f = nf;
+      }
+      i++; continue;
+    }
+    i++;
+  }
+  return [a, b, c, d, e, f];
+}
+
+// 求 2D 仿射矩阵的逆; det≈0 时退化为单位矩阵。
+function invertCTM(m) {
+  const [a, b, c, d, e, f] = m;
+  const det = a * d - b * c;
+  if (Math.abs(det) < 1e-9) return [1, 0, 0, 1, 0, 0];
+  const invDet = 1 / det;
+  return [
+    d * invDet,
+    -b * invDet,
+    -c * invDet,
+    a * invDet,
+    (c * f - e * d) * invDet,
+    (e * b - a * f) * invDet,
+  ];
+}
+
+const _ctmDec = new TextDecoder("latin1");
+
+// 计算某个 pdf-lib 页面内容流执行结束时的"最终 CTM"。
+// 读取 /Contents(可能是单个流或流数组), 用 pako 解 Flate, 拼接后交给 finalCTMOf 追踪。
+function computePageFinalCTM(libPage) {
+  const ctx = libPage.node.context;
+  const contents = libPage.node.Contents();
+  const refs = [];
+  if (contents instanceof PDFArray) {
+    for (let k = 0; k < contents.size(); k++) refs.push(contents.get(k));
+  } else if (contents) {
+    refs.push(contents);
+  }
+  let concatenated = "";
+  for (const ref of refs) {
+    try {
+      const stream = ctx.lookup(ref);
+      const comp = stream.getContents();
+      let raw;
+      try { raw = Pako.inflate(new Uint8Array(comp)); } catch { raw = comp; }
+      concatenated += " " + _ctmDec.decode(raw);
+    } catch { /* 跳过无法解码的流 */ }
+  }
+  return finalCTMOf(concatenated);
+}
+
+// 用内容流矩形画框(已对页面最终 CTM 做逆变换抵消)。返回绘制的绝对页面坐标矩形(供校验)。
+function addBoxAsRect(libPage, g, stroke, fill, finalCTM) {
   const pw = libPage.getWidth();
   const ph = libPage.getHeight();
-  const pad = 3;  // 点
-  const x0 = g.x0 * pw - pad;
-  const x1 = g.x1 * pw + pad;
-  const yTop = ph * (1 - g.yTop) + pad;
-  const yBot = ph * (1 - g.yBot) - pad;
+  const pad = 3; // 点
+  const xL = g.x0 * pw - pad;        // 左
+  const xR = g.x1 * pw + pad;        // 右
+  const yT = ph * (1 - g.yTop) + pad; // 上(较大 y)
+  const yB = ph * (1 - g.yBot) - pad; // 下(较小 y)
+  const x = Math.min(xL, xR);
+  const y = Math.min(yT, yB);
+  const w = Math.abs(xR - xL);
+  const h = Math.abs(yT - yB);
+  const inv = invertCTM(finalCTM);
+  // q + cm(逆CTM): 把当前(=页面最终)CTM 归零为绝对页面坐标系, 矩形按绝对坐标绘制, 再 Q 还原。
+  libPage.pushOperators(pushGraphicsState());
+  libPage.pushOperators(concatTransformationMatrix(inv[0], inv[1], inv[2], inv[3], inv[4], inv[5]));
   libPage.drawRectangle({
-    x: x0, y: yBot,
-    width: x1 - x0,
-    height: yTop - yBot,
+    x, y, width: w, height: h,
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
     borderWidth: 2.5,
-    backgroundColor: rgb(fill[0], fill[1], fill[2]),
-    opacity: 0.22,
-    borderOpacity: 1.0,
+    color: rgb(fill[0], fill[1], fill[2]),
+    opacity: 0.22, // 内部填充半透明, 边框实色
   });
+  libPage.pushOperators(popGraphicsState());
+  return { x, y, w, h };
 }
 
 // 短语与日期常不在同一行(尤其 CCS 等版式), 改为"就近关联":
@@ -298,7 +382,7 @@ export function computeBoxes(pages, annualColor) {
       if (isExpiry) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
-          boxes.push({ libPage: p.libPage, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH) });
+          boxes.push({ libPage: p.libPage, pno: p.pno, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH), finalCTM: p.finalCTM });
           red++; used.add(keyOf(g));
         }
         return;
@@ -307,11 +391,11 @@ export function computeBoxes(pages, annualColor) {
         n.includes("年度") || n.includes("期间") || n.includes("中间");
       const hasSurvey = n.includes("survey") || n.includes("检验");
       if (hasKind && hasSurvey) {
-        const g = nearestDate(p, li, lineY(line), used, keyOf);
-        if (g) {
-          boxes.push({ libPage: p.libPage, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH) });
-          blue++; used.add(keyOf(g));
-        }
+          const g = nearestDate(p, li, lineY(line), used, keyOf);
+          if (g) {
+            boxes.push({ libPage: p.libPage, pno: p.pno, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH), finalCTM: p.finalCTM });
+            blue++; used.add(keyOf(g));
+          }
       }
     });
   }
@@ -557,10 +641,16 @@ export async function processPdf(bytes, opts = {}) {
   }
   await pdfjsDoc.destroy();
 
+  // 计算每页内容流执行结束时的"最终 CTM"(用于画框时抵消偏移; 多数字版证书为单位矩阵,
+  // 部分证书整页 Y 翻转 [1,0,0,-1,0,H] 或带缩放, 不抵消会导致框纵向翻转/错位)。
+  for (const p of pages) p.finalCTM = computePageFinalCTM(p.libPage);
+
   // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙(归一化坐标, 无 SCALE 依赖)
   const { boxes, red, blue } = computeBoxes(pages, annualColor);
+  const drawnBoxes = [];
   for (const b of boxes) {
-    drawGroup(b.libPage, b.group, b.stroke, b.fill);
+    const rect = addBoxAsRect(b.libPage, b.group, b.stroke, b.fill, b.finalCTM || [1, 0, 0, 1, 0, 0]);
+    drawnBoxes.push({ pno: b.pno, ...rect });
   }
 
   const groups = groupCertificates(pages);
@@ -574,7 +664,7 @@ export async function processPdf(bytes, opts = {}) {
     // 幽灵组的页内容合并到相邻组(防止丢页), 但不在 Excel 中产生空行
     records = validRecords;
   }
-  const outBytes = await pdfLibDoc.save();
+  const outBytes = await pdfLibDoc.save({ useObjectStreams: false });
 
   // 诊断信息: 文本提取统计(帮助判断"扫描版PDF" vs "短语不匹配")
   const totalItems = pages.reduce((s, p) => s + p.items.length, 0);
@@ -589,7 +679,7 @@ export async function processPdf(bytes, opts = {}) {
     usedOcr: ocrPages > 0,
   };
 
-  return { bytes: outBytes, records, red, blue, textStats };
+  return { bytes: outBytes, records, red, blue, textStats, drawnBoxes };
 }
 
 // ---------------------------------------------------------------- 合并多个 PDF 为一个

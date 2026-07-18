@@ -104,6 +104,11 @@
       <p class="copyright">© 2026 广东科学技术职业学院 商学院 数据分析技能大师工作室。本工具当前<strong>免费提供使用</strong>，可用于个人与企业内部的船舶证书整理；未经授权不得用于商业转售或包装为收费服务。识别结果仅供参考，请以证书原件为准。</p>
       <details class="changelog">
         <summary>更新日志</summary>
+        <div class="cl-entry"><strong>v1.3.6</strong> (2026-07-18)</div>
+        <ul class="cl-list">
+          <li>修复: 标注框位置错误/纵向翻转 —— 根因是部分源证书页面内容流末尾 CTM 非单位矩阵(整页 Y 翻转 /date 缩放)。改为读取每页内容流、追踪其最终 CTM, 画框时用 <code>q + cm(逆CTM) + Q</code> 将绘制坐标系归零为绝对页面坐标系, 框精确落在与文字一致的位置</li>
+          <li>弃用 PDF <code>/Square</code> 原生注释方案: pdf-lib 对"已加载且原页非空 Annots"的文档新增注释后 <code>save()</code> 会整体丢弃新注释(已知缺陷); 内容流方案无此限制且框绘制在最上层、更清晰可见</li>
+        </ul>
         <div class="cl-entry"><strong>v1.3.5</strong> (2026-07-18)</div>
         <ul class="cl-list">
           <li>修复: 归一化坐标画框时 X 轴漏乘页面宽度导致框消失(单文件和合并均无框)</li>
