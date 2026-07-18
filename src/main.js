@@ -8,6 +8,14 @@ import { CERT_ORDER, certOrderKey } from "./kb.js";
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 const STD_FONTS = `${import.meta.env.BASE_URL || "/"}pdfjs-standard-fonts/`;
 pdfjsLib.GlobalWorkerOptions.standardFontDataUrl = STD_FONTS;
+
+// 本地日期(YYYY-MM-DD), 用浏览器时区而非 UTC, 避免 toISOString() 在 GMT+8 凌晨返回昨天导致文件名日期错
+function localDateStr(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 configurePdfjs(pdfjsLib);
 
 // ---------- DOM ----------
@@ -184,7 +192,7 @@ async function run() {
     try {
       log("\n[合并] 正在合并所有标注PDF为一份...");
       mergedBytes = await mergePdfs(outPdfs.map((p) => p.bytes), {
-        title: `船舶证书标注汇总_${new Date().toISOString().slice(0, 10)}`,
+        title: `船舶证书标注汇总_${localDateStr()}`,
       });
       log(`  合并完成: 共 ${outPdfs.length} 份 → 1份合并PDF`);
     } catch (e) {
@@ -214,7 +222,7 @@ function renderResults(outPdfs, excelBytes, records, mergedBytes) {
     const li = document.createElement("li");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([mergedBytes], { type: "application/pdf" }));
-    a.download = `船舶证书标注合并_${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.download = `船舶证书标注合并_${localDateStr()}.pdf`;
     a.textContent = "⬇ 船舶证书标注合并.pdf（全部合为一份）";
     a.style.fontWeight = "bold";
     li.appendChild(a);
@@ -296,5 +304,5 @@ renderFiles();
 preloadOcr();
 
 // 构建信息(写在文件末尾确保在所有变量定义之后, 避免 esbuild 重排导致 TDZ)
-$("appVersion").textContent = "1.3.3";
-$("appBuildDate").textContent = "2026-07-18 07:42:00";
+$("appVersion").textContent = "1.3.4";
+$("appBuildDate").textContent = "2026-07-18 08:05:00";

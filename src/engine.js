@@ -258,10 +258,10 @@ function drawGroup(libPage, g, stroke, fill) {
     width: x1 - x0,
     height: yTop - yBot,
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
-    borderWidth: 1.6,
+    borderWidth: 2.5,
     backgroundColor: rgb(fill[0], fill[1], fill[2]),
-    opacity: 0.4,
-    borderOpacity: 0.9,
+    opacity: 0.22,
+    borderOpacity: 1.0,
   });
 }
 

@@ -104,6 +104,11 @@
       <p class="copyright">© 2026 广东科学技术职业学院 商学院 数据分析技能大师工作室。本工具当前<strong>免费提供使用</strong>，可用于个人与企业内部的船舶证书整理；未经授权不得用于商业转售或包装为收费服务。识别结果仅供参考，请以证书原件为准。</p>
       <details class="changelog">
         <summary>更新日志</summary>
+        <div class="cl-entry"><strong>v1.3.4</strong> (2026-07-18)</div>
+        <ul class="cl-list">
+          <li>修复: 下载文件名/标题日期改用浏览器本地时区(原 toISOString 为 UTC, GMT+8 凌晨会显示昨天)</li>
+          <li>优化: 标注框边框加粗(1.6→2.5pt)、描边不透明、填充更淡, 在花哨证书背景上更清晰可见</li>
+        </ul>
         <div class="cl-entry"><strong>v1.3.3</strong> (2026-07-18)</div>
         <ul class="cl-list">
           <li>修复: 标注框位置偏移(归一化坐标, 彻底消除 pdf.js viewport 与 pdf-lib page 尺寸不一致导致的偏移)</li>
