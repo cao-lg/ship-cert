@@ -254,20 +254,36 @@ function ensureAnnotStream(libPage) {
   _annotStreamReady.set(libPage, true);
 }
 
-// 用内容流矩形画框。坐标 = pdf.js 文字归一化坐标换算回的绝对页面点坐标(已含 Y 轴翻转)。
+// 把 pdf.js 视口设备坐标(原点左上 y 向下, 含页面 /Rotate 与 y 翻转)反算成 PDF 用户空间坐标
+// (原点左下 y 向上, = 媒体框坐标系)。仅用于把【OCR 识别出的词】从渲染视口空间转换回用户空间,
+// 因为 OCR 在旋转后的画布上识别, 坐标是旋转视口空间; 而 pdf.js 文字层坐标本就已在用户空间。
+function deviceToUser(vp, dx, dy) {
+  const [a, b, c, d, e, f] = vp.transform;
+  const det = a * d - b * c;
+  if (Math.abs(det) < 1e-9) return [dx, dy];
+  const x = (d * (dx - e) - c * (dy - f)) / det;
+  const y = (-b * (dx - e) + a * (dy - f)) / det;
+  return [x, y];
+}
+
+// 用内容流矩形画框。坐标直接使用 pdf.js 文字的【用户空间】坐标(媒体框坐标系, 与旋转无关):
+//   pdf.js 文字层 transform[4]/[5] 本就在用户空间, 取日期组极值即可;
+//   OCR 页的词已在 processPdf 中经 deviceToUser 预转换到同一用户空间。
+// 因此无论页面是否旋转(/Rotate), 框与文字都落在同一坐标系, 页面旋转会把整页(含框)一起旋转, 落点恒正确。
+// 独立内容流默认单位 CTM, 矩形按用户空间绝对坐标绘制, 与源内容流任何 CTM 无关。
 function addBoxAsRect(libPage, g, stroke, fill) {
   ensureAnnotStream(libPage);
-  const pw = libPage.getWidth();
-  const ph = libPage.getHeight();
-  const pad = 3; // 点
-  const xL = g.x0 * pw - pad;        // 左
-  const xR = g.x1 * pw + pad;        // 右
-  const yT = ph * (1 - g.yTop) + pad; // 上(较大 y)
-  const yB = ph * (1 - g.yBot) - pad; // 下(较小 y)
-  const x = Math.min(xL, xR);
-  const y = Math.min(yT, yB);
-  const w = Math.abs(xR - xL);
-  const h = Math.abs(yT - yB);
+  const pad = 3; // 用户点
+  // 日期组四角(用户空间, y 向上): 左/右取 x 极值, 上/下取 y 极值(已含 fontSize)。
+  const left = g.x0Dev - pad, right = g.x1Dev + pad;
+  const bottom = Math.min(g.yTopDev, g.yBotDev) - pad; // y 向上: 较小 y = 下边
+  const top = Math.max(g.yTopDev, g.yBotDev) + pad;     // 较大 y = 上边
+  let x = left, y = bottom, w = right - left, h = top - bottom;
+  // 钳制到媒体框内: 边缘框因 pad 可能略超出, 钳制避免被裁切/越界。
+  const pw = libPage.getWidth(), ph = libPage.getHeight();
+  const xMax = Math.min(x + w, pw), yMax = Math.min(y + h, ph);
+  x = Math.max(0, x); y = Math.max(0, y);
+  w = Math.max(0, xMax - x); h = Math.max(0, yMax - y);
   libPage.drawRectangle({
     x, y, width: w, height: h,
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
@@ -310,7 +326,7 @@ export function computeBoxes(pages, annualColor) {
       if (isExpiry) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
-          boxes.push({ libPage: p.libPage, pno: p.pno, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH) });
+          boxes.push({ libPage: p.libPage, pno: p.pno, stroke: RED, fill: RED_FILL, group: g, vp: p.vp });
           red++; used.add(keyOf(g));
         }
         return;
@@ -321,7 +337,7 @@ export function computeBoxes(pages, annualColor) {
       if (hasKind && hasSurvey) {
           const g = nearestDate(p, li, lineY(line), used, keyOf);
           if (g) {
-            boxes.push({ libPage: p.libPage, pno: p.pno, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH) });
+            boxes.push({ libPage: p.libPage, pno: p.pno, stroke: color.stroke, fill: color.fill, group: g, vp: p.vp });
             blue++; used.add(keyOf(g));
           }
       }
@@ -553,7 +569,20 @@ export async function processPdf(bytes, opts = {}) {
     if (opts.ocr && typeof document !== "undefined" && !pageHasUsableText(items)) {
       try {
         const ocrItems = await ocrPageItems(page, opts.ocrLang || OCR_LANG, opts.onWarn, opts.ocrScale || OCR_SCALE);
-        if (ocrItems.length > items.length) { items.length = 0; items.push(...ocrItems); ocrUsed = true; }
+        if (ocrItems.length > items.length) {
+          // OCR 词在旋转视口空间(bbox/scale), 反算到用户空间, 与文字层坐标统一到同一坐标系。
+          const conv = ocrItems.map((it) => {
+            const dx0 = it.x0, dx1 = it.x0 + it.width;
+            const dyTop = it.y - it.height, dyBot = it.y; // 设备: 顶(y小) < 底(y大)
+            const pts = [[dx0, dyTop], [dx1, dyTop], [dx0, dyBot], [dx1, dyBot]]
+              .map(([dx, dy]) => deviceToUser(vp, dx, dy));
+            const uxs = pts.map((p) => p[0]), uys = pts.map((p) => p[1]);
+            const ux0 = Math.min(...uxs), ux1 = Math.max(...uxs);
+            const uyb = Math.min(...uys), uyt = Math.max(...uys);
+            return { str: it.str, x0: ux0, y: uyt, width: ux1 - ux0, height: uyt - uyb };
+          });
+          items.length = 0; items.push(...conv); ocrUsed = true;
+        }
       } catch (e) {
         if (opts.onWarn) opts.onWarn(`  ⚠️ OCR 失败: ${e.message}`);
       }
@@ -568,7 +597,7 @@ export async function processPdf(bytes, opts = {}) {
       pt = lines.map((l) => l.text).join("\n");
     }
     const topHeading = detectTopHeading(lines, vp.height);
-    pages.push({ pno, items, lines, plainText: pt, topHeading, libPage, SCALE, pageHeight, vpW: vp.width, vpH: vp.height, ocrUsed });
+    pages.push({ pno, items, lines, plainText: pt, topHeading, libPage, SCALE, pageHeight, vp, vpW: vp.width, vpH: vp.height, ocrUsed });
   }
   await pdfjsDoc.destroy();
 

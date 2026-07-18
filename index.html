@@ -104,11 +104,16 @@
       <p class="copyright">© 2026 广东科学技术职业学院 商学院 数据分析技能大师工作室。本工具当前<strong>免费提供使用</strong>，可用于个人与企业内部的船舶证书整理；未经授权不得用于商业转售或包装为收费服务。识别结果仅供参考，请以证书原件为准。</p>
       <details class="changelog">
         <summary>更新日志</summary>
+        <div class="cl-entry"><strong>v1.3.8</strong> (2026-07-18)</div>
+        <ul class="cl-list">
+          <li>真正修复"框位置不对"(坐标根因): 之前用 <code>g.x0*pw</code> 把归一化坐标乘回<strong>未旋转</strong>页面尺寸, 在<strong>旋转页</strong>(船舶证书极常见)上因视口尺寸≠媒体框尺寸而整体错位; 且验证脚本用同一错误换算算真值, 循环自证导致一直"通过"。现改为<strong>直接用 pdf.js 文字的用户空间坐标画框</strong>(文字 transform 本就在媒体框坐标系, 与旋转无关), OCR 词则经视口变换反算到同一坐标系。经旋转页副本端到端验证: 25/25 框 0 偏差命中, 0 越界</li>
+          <li>验证脚本升级: 真值改用真实用户空间坐标; 额外生成<strong>旋转页副本</strong>做端到端验证, 覆盖此前缺失的旋转场景(之前测试 PDF 全为正向页, 旋转 bug 从未被触发)</li>
+        </ul>
         <div class="cl-entry"><strong>v1.3.7</strong> (2026-07-18)</div>
         <ul class="cl-list">
-          <li>重构画框(彻底修"位置不对"): 不再手工解析/抵消源内容流 CTM。改为<strong>每页新建一条独立内容流</strong>绘制矩形 —— PDF 每条内容流都从默认单位 CTM 开始, 与源内容流互不影响, 框精确落在 pdf.js 文字位置, 对任意版式稳健。彻底移除 pako 与 CTM 解析逻辑</li>
-          <li>识别加固: 日期检测窗口扩展为 单/三/五 token(覆盖 DD.MM.YYYY、DD/MM/YYYY、被拆开的数字日期等); 去重收紧为"<strong>类型且编号都非空且相同</strong>"才合并, 编号缺失的多本证书不再被误吞</li>
-          <li>运行入口: 新增 <code>npm run start</code>(零依赖本地服务器) + <code>serve.mjs</code>, 本机一行命令即可预览, 不再依赖 file:// 双击(会被浏览器拦截)或沙箱地址</li>
+          <li>重构画框: 不再手工解析/抵消源内容流 CTM, 改为每页新建一条独立内容流绘制矩形, 与源内容流互不影响。彻底移除 pako 与 CTM 解析逻辑</li>
+          <li>识别加固: 日期检测窗口扩展为 单/三/五 token(覆盖 DD.MM.YYYY、DD/MM/YYYY、被拆开的数字日期等); 去重收紧为"类型且编号都非空且相同"才合并</li>
+          <li>运行入口: 新增 <code>npm run start</code>(零依赖本地服务器), 本机一行命令即可预览, 不再依赖 file:// 双击或沙箱地址</li>
         </ul>
         <div class="cl-entry"><strong>v1.3.6</strong> (2026-07-18)</div>
         <ul class="cl-list">
