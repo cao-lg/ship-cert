@@ -247,12 +247,13 @@ function normalizeGroup(g, vpW, vpH) {
 // 用归一化坐标画框: (x0,x1,yTop,yBot 均为 0~1), 乘以 libPage 实际尺寸即得 PDF 绘制坐标。
 // PDF 坐标系原点在左下角, Y 向上 → y 需翻转: normY → pageHeight * (1 - normY)
 function drawGroup(libPage, g, stroke, fill) {
-  const padN = 3 / libPage.getWidth();   // 归一化 padding
-  const padNH = 3 / libPage.getHeight();
-  const x0 = g.x0 - padN;
-  const x1 = g.x1 + padN;
-  const yTop = libPage.getHeight() * (1 - g.yTop) + padNH;
-  const yBot = libPage.getHeight() * (1 - g.yBot) - padNH;
+  const pw = libPage.getWidth();
+  const ph = libPage.getHeight();
+  const pad = 3;  // 点
+  const x0 = g.x0 * pw - pad;
+  const x1 = g.x1 * pw + pad;
+  const yTop = ph * (1 - g.yTop) + pad;
+  const yBot = ph * (1 - g.yBot) - pad;
   libPage.drawRectangle({
     x: x0, y: yBot,
     width: x1 - x0,
