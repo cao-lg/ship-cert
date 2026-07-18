@@ -1,8 +1,7 @@
 // 船舶证书 PDF 标注与信息提取引擎(纯前端)。
 // 逻辑对齐 Python 版 cert_tool.py: pdf.js 取文字与坐标, pdf-lib 画红/绿框并保存。
 import * as pdfjsDefault from "pdfjs-dist";
-import { PDFDocument, PDFArray, rgb, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
-import Pako from "pako";
+import { PDFDocument, rgb } from "pdf-lib";
 import { KB, ANNUAL_COLORS, RED, RED_FILL } from "./kb.js";
 import {
   MONTHS, isMonth, normToken, normSp, toIso, detectType, detectSociety,
@@ -197,13 +196,15 @@ function detectTopHeading(lines, vpHeight) {
   return null;
 }
 
-// 行内日期分组(支持 ISO / DD Mon YYYY / Mon DD YYYY / 中文)
+// 行内日期分组: 单 token / 三 token / 五 token 窗口, 统一交给 toIso 判定, 覆盖
+// ISO、中文、粘连 DDMonYYYY、DD.MM.YYYY、DD/MM/YYYY、Mon DD YYYY、DD Mon YYYY,
+// 以及被拆成多 token 的数字日期(如 "18" "." "03" "." "2027")。坐标取窗口内 token 的极值。
 export function findDateGroups(items) {
   const groups = [];
-  const push = (arr) => {
+  const tryPush = (arr) => {
     const combo = arr.map((i) => normToken(i.str)).join(" ");
     const iso = toIso(combo);
-    if (!iso) return;
+    if (!iso) return false;
     groups.push({
       x0Dev: Math.min(...arr.map((i) => i.x0)),
       x1Dev: Math.max(...arr.map((i) => i.x0 + i.width)),
@@ -211,30 +212,21 @@ export function findDateGroups(items) {
       yBotDev: Math.max(...arr.map((i) => i.y)),
       iso,
     });
+    return true;
   };
   let i = 0;
   while (i < items.length) {
-    const it = items[i];
-    const nt = normToken(it.str);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(nt)) { push([it]); i++; continue; }
-    if (/^\d{4}年\d{1,2}月\d{1,2}日$/.test(nt)) { push([it]); i++; continue; }
-    // 粘连 token(如 16March2031 / September18,2026): 单个 token 即完整日期
-    if (toIso(nt)) { push([it]); i++; continue; }
-    const next = items[i + 1], nnext = items[i + 2];
-    if (/^\d{1,2}$/.test(nt) && next && isMonth(normToken(next.str)) && nnext && /^\d{4}$/.test(normToken(nnext.str))) {
-      push([it, next, nnext]); i += 3; continue;
-    }
-    if (isMonth(nt) && next && /^\d{1,2}$/.test(normToken(next.str)) && nnext && /^\d{4}$/.test(normToken(nnext.str))) {
-      push([it, next, nnext]); i += 3; continue;
-    }
+    if (tryPush([items[i]])) { i++; continue; }            // 单 token: ISO/中文/粘连
+    if (i + 2 < items.length && tryPush(items.slice(i, i + 3))) { i += 3; continue; } // 三 token: Mon DD YYYY 等
+    if (i + 4 < items.length && tryPush(items.slice(i, i + 5))) { i += 5; continue; } // 五 token: 18 . 03 . 2027 等
     i++;
   }
   return groups;
 }
 
-// 将 device-coord 日期组归一化到 [0,1] 范围(基于 pdf.js viewport 尺寸)。
-// 归一化后不再依赖 SCALE; 画框改用 PDF /Square 注释(页面用户坐标系, 不受内容流 CTM 影响),
-// 彻底消除"源证书整页缩放/平移/旋转"以及"pdf.js viewport vs pdf-lib page 尺寸差异"导致的偏移。
+// 将 device-coord 日期组归一化到 [0,1] 范围(基于 pdf.js viewport 尺寸, scale=1 即页面点)。
+// 归一化后不再依赖 SCALE; 画框时再乘回页面宽高并翻转 Y, 得到绝对页面坐标(点, 左下原点),
+// 由独立内容流(默认单位 CTM)直接绘制, 不受源内容流任何 CTM 影响。
 function normalizeGroup(g, vpW, vpH) {
   return {
     x0: g.x0Dev / vpW,
@@ -245,85 +237,26 @@ function normalizeGroup(g, vpW, vpH) {
   };
 }
 
-// ---------------------------------------------------------------- 内容流画框(CTM 抵消)
-// 用内容流矩形(drawRectangle)在页面【用户坐标系】画框。
-// 关键问题: 很多源证书 PDF 的页面内容流末尾 CTM 不是单位矩阵(常见 [1,0,0,-1,0,H] 整页 Y 翻转,
-// 或加载缩放/平移), 直接在末尾追加矩形会继承该 CTM, 导致框纵向翻转/偏移 —— 这正是之前"位置不对"的根因。
-// 解决: 读取页面内容流、追踪其执行结束时的"最终 CTM", 在画框时用 q + cm(逆CTM) + Q 包裹,
-// 把绘制坐标系归零回绝对页面坐标系, 框即落在与 pdf.js 文字坐标一致的正确位置。
-// 相比 PDF /Square 原生注释方案: 注释方案在 pdf-lib 对"已加载且原页非空 Annots"的文档上
-// 新增注释对象后 save() 会整体丢弃新注释(pdf-lib 已知缺陷), 而内容流方案无此限制且绘制在最上层(可见)。
+// ---------------------------------------------------------------- 内容流画框(独立内容流, 零 CTM)
+// 关键修正(彻底解决"框位置不对"):
+//   旧方案在源 PDF 的【现有内容流末尾】追加矩形, 会继承该流末尾的 CTM(常见整页 Y 翻转
+//   [1,0,0,-1,0,H] 或缩放/平移), 导致框纵向翻转/偏移; 而手工解析内容流求逆 CTM 对任意 PDF 不可靠。
+//   新方案: 为每页【新建一条独立内容流】。PDF 规范中每条内容流都从默认图形状态(单位 CTM)开始,
+//   与源内容流互不影响, 因此矩形按绝对页面坐标(点, 左下原点)绘制即精确落在 pdf.js 文字位置,
+//   无需解析/抵消任何源 CTM。这也彻底移除了 pako 与 CTM 解析逻辑。
+//   新建流追加为页面最后一条内容流, 绘制在最上层, 清晰可见。
 
-// 追踪一段内容流执行结束后的图形 CTM(只关心 cm 与 q/Q; 文本矩阵不影响路径绘制)。
-function finalCTMOf(str) {
-  const t = String(str).replace(/\r/g, " ").split(/\s+/).filter(Boolean);
-  let a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
-  const stack = [];
-  let i = 0;
-  while (i < t.length) {
-    const op = t[i];
-    if (op === "q") { stack.push([a, b, c, d, e, f]); i++; continue; }
-    if (op === "Q") { if (stack.length) [a, b, c, d, e, f] = stack.pop(); i++; continue; }
-    if (op === "cm") {
-      const ma = +t[i - 6], mb = +t[i - 5], mc = +t[i - 4], md = +t[i - 3], me = +t[i - 2], mf = +t[i - 1];
-      if ([ma, mb, mc, md, me, mf].every((v) => Number.isFinite(v))) {
-        // CTM_new = CTM_cur × M
-        const na = a * ma + c * mb, nb = b * ma + d * mb;
-        const nc = a * mc + c * md, nd = b * mc + d * md;
-        const ne = a * me + c * mf + e, nf = b * me + d * mf + f;
-        a = na; b = nb; c = nc; d = nd; e = ne; f = nf;
-      }
-      i++; continue;
-    }
-    i++;
-  }
-  return [a, b, c, d, e, f];
+const _annotStreamReady = new WeakMap();
+function ensureAnnotStream(libPage) {
+  if (_annotStreamReady.has(libPage)) return;
+  // getContentStream(false): 新建一条空内容流并追加为页面 /Contents 的最后一条(默认单位 CTM)
+  libPage.getContentStream(false);
+  _annotStreamReady.set(libPage, true);
 }
 
-// 求 2D 仿射矩阵的逆; det≈0 时退化为单位矩阵。
-function invertCTM(m) {
-  const [a, b, c, d, e, f] = m;
-  const det = a * d - b * c;
-  if (Math.abs(det) < 1e-9) return [1, 0, 0, 1, 0, 0];
-  const invDet = 1 / det;
-  return [
-    d * invDet,
-    -b * invDet,
-    -c * invDet,
-    a * invDet,
-    (c * f - e * d) * invDet,
-    (e * b - a * f) * invDet,
-  ];
-}
-
-const _ctmDec = new TextDecoder("latin1");
-
-// 计算某个 pdf-lib 页面内容流执行结束时的"最终 CTM"。
-// 读取 /Contents(可能是单个流或流数组), 用 pako 解 Flate, 拼接后交给 finalCTMOf 追踪。
-function computePageFinalCTM(libPage) {
-  const ctx = libPage.node.context;
-  const contents = libPage.node.Contents();
-  const refs = [];
-  if (contents instanceof PDFArray) {
-    for (let k = 0; k < contents.size(); k++) refs.push(contents.get(k));
-  } else if (contents) {
-    refs.push(contents);
-  }
-  let concatenated = "";
-  for (const ref of refs) {
-    try {
-      const stream = ctx.lookup(ref);
-      const comp = stream.getContents();
-      let raw;
-      try { raw = Pako.inflate(new Uint8Array(comp)); } catch { raw = comp; }
-      concatenated += " " + _ctmDec.decode(raw);
-    } catch { /* 跳过无法解码的流 */ }
-  }
-  return finalCTMOf(concatenated);
-}
-
-// 用内容流矩形画框(已对页面最终 CTM 做逆变换抵消)。返回绘制的绝对页面坐标矩形(供校验)。
-function addBoxAsRect(libPage, g, stroke, fill, finalCTM) {
+// 用内容流矩形画框。坐标 = pdf.js 文字归一化坐标换算回的绝对页面点坐标(已含 Y 轴翻转)。
+function addBoxAsRect(libPage, g, stroke, fill) {
+  ensureAnnotStream(libPage);
   const pw = libPage.getWidth();
   const ph = libPage.getHeight();
   const pad = 3; // 点
@@ -335,10 +268,6 @@ function addBoxAsRect(libPage, g, stroke, fill, finalCTM) {
   const y = Math.min(yT, yB);
   const w = Math.abs(xR - xL);
   const h = Math.abs(yT - yB);
-  const inv = invertCTM(finalCTM);
-  // q + cm(逆CTM): 把当前(=页面最终)CTM 归零为绝对页面坐标系, 矩形按绝对坐标绘制, 再 Q 还原。
-  libPage.pushOperators(pushGraphicsState());
-  libPage.pushOperators(concatTransformationMatrix(inv[0], inv[1], inv[2], inv[3], inv[4], inv[5]));
   libPage.drawRectangle({
     x, y, width: w, height: h,
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
@@ -346,7 +275,6 @@ function addBoxAsRect(libPage, g, stroke, fill, finalCTM) {
     color: rgb(fill[0], fill[1], fill[2]),
     opacity: 0.22, // 内部填充半透明, 边框实色
   });
-  libPage.pushOperators(popGraphicsState());
   return { x, y, w, h };
 }
 
@@ -382,7 +310,7 @@ export function computeBoxes(pages, annualColor) {
       if (isExpiry) {
         const g = nearestDate(p, li, lineY(line), used, keyOf);
         if (g) {
-          boxes.push({ libPage: p.libPage, pno: p.pno, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH), finalCTM: p.finalCTM });
+          boxes.push({ libPage: p.libPage, pno: p.pno, stroke: RED, fill: RED_FILL, group: normalizeGroup(g, p.vpW, p.vpH) });
           red++; used.add(keyOf(g));
         }
         return;
@@ -393,7 +321,7 @@ export function computeBoxes(pages, annualColor) {
       if (hasKind && hasSurvey) {
           const g = nearestDate(p, li, lineY(line), used, keyOf);
           if (g) {
-            boxes.push({ libPage: p.libPage, pno: p.pno, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH), finalCTM: p.finalCTM });
+            boxes.push({ libPage: p.libPage, pno: p.pno, stroke: color.stroke, fill: color.fill, group: normalizeGroup(g, p.vpW, p.vpH) });
             blue++; used.add(keyOf(g));
           }
       }
@@ -569,8 +497,11 @@ function buildRecord(group, pages, fileName) {
 //  - 丢弃的记录的备注合并进保留记录的备注(用 ｜ 分隔, 保留来源可追溯)。
 function dedupRecords(records) {
   const groups = new Map();
+  // 编号缺失的记录用唯一序号作 key, 保证"无编号的多本证书"永不互相合并(避免吞掉证书)。
+  let anon = 0;
   for (const r of records) {
-    const key = `${r.type || ""}|${r.no || ""}`;
+    // 仅当【类型且编号都非空且相同】才视为同一证书合并; 编号缺失则各自独立。
+    const key = r.no ? `${r.type || ""}|${r.no}` : `∅|${r.type || ""}|${anon++}`;
     const ex = groups.get(key);
     if (!ex) { groups.set(key, r); continue; }
     const score = (x) => (x.expiry ? 4 : 0) + (x.issue ? 2 : 0) + (x.annual ? 2 : 0) + (x.no ? 1 : 0);
@@ -641,15 +572,12 @@ export async function processPdf(bytes, opts = {}) {
   }
   await pdfjsDoc.destroy();
 
-  // 计算每页内容流执行结束时的"最终 CTM"(用于画框时抵消偏移; 多数字版证书为单位矩阵,
-  // 部分证书整页 Y 翻转 [1,0,0,-1,0,H] 或带缩放, 不抵消会导致框纵向翻转/错位)。
-  for (const p of pages) p.finalCTM = computePageFinalCTM(p.libPage);
-
-  // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙(归一化坐标, 无 SCALE 依赖)
+  // 就近关联画框: 过期日期=红, 年检/中间检验=蓝/绿/橙(归一化坐标, 无 SCALE 依赖)。
+  // 画框走"独立内容流(单位 CTM)", 坐标直接用绝对页面点, 不再解析/抵消源内容流 CTM。
   const { boxes, red, blue } = computeBoxes(pages, annualColor);
   const drawnBoxes = [];
   for (const b of boxes) {
-    const rect = addBoxAsRect(b.libPage, b.group, b.stroke, b.fill, b.finalCTM || [1, 0, 0, 1, 0, 0]);
+    const rect = addBoxAsRect(b.libPage, b.group, b.stroke, b.fill);
     drawnBoxes.push({ pno: b.pno, ...rect });
   }
 

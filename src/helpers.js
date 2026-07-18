@@ -125,6 +125,9 @@ export function toIso(text) {
   if (m) return `${m[3]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
   m = text.match(/^(\d{4})[/.](\d{1,2})[/.](\d{1,2})$/);
   if (m) return `${m[1]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[3], 10)).padStart(2, "0")}`;
+  // 空格分隔纯数字日期(欧式 DD MM YYYY, 船证常见): 18 03 2027
+  m = text.match(/^(\d{1,2})\s+(\d{1,2})\s+(\d{4})$/);
+  if (m) return `${m[3]}-${String(parseInt(m[2], 10)).padStart(2, "0")}-${String(parseInt(m[1], 10)).padStart(2, "0")}`;
   return null;
 }
 

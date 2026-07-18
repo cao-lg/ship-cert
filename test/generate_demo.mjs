@@ -1,6 +1,5 @@
 // 生成一份"已标注"演示 PDF: 用引擎处理合并测试 PDF(含整页 Y 翻转页), 输出到工作区根目录。
 import { readFileSync, writeFileSync } from "fs";
-import Pako from "pako";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { processPdf, configurePdfjs } from "../src/engine.js";
 
