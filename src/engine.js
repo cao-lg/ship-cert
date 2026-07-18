@@ -289,7 +289,7 @@ function addBoxAsRect(libPage, g, stroke, fill) {
     borderColor: rgb(stroke[0], stroke[1], stroke[2]),
     borderWidth: 2.5,
     color: rgb(fill[0], fill[1], fill[2]),
-    opacity: 0.22, // 内部填充半透明, 边框实色
+    opacity: 0.09, // 极淡半透明填充, 不遮挡日期文字(之前 0.22 太浓会盖字)
   });
   return { x, y, w, h };
 }
